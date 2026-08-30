@@ -44,7 +44,10 @@ def _public(p: dict) -> dict:
 
 @router.get("")
 def list_proxies():
-    return [_public(p) for p in database.get_proxies(include_disabled=True)]
+    try:
+        return [_public(p) for p in database.get_proxies(include_disabled=True)]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("")

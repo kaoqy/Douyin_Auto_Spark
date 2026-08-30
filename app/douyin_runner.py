@@ -85,8 +85,6 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
     """验证账号 Cookie 是否有效"""
     from playwright.async_api import async_playwright
 
-    proxy_config = _parse_proxy_url(proxy_url)
-    
     try:
         cookies = parse_cookie_json(cookie)
     except Exception as e:
@@ -95,11 +93,8 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
     async with async_playwright() as p:
         browser = None
         try:
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=proxy_config,
-            )
-            context = await browser.new_context()
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(proxy=_parse_proxy_url(proxy))
             await context.add_cookies([c.to_playwright_cookie() for c in cookies])
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
@@ -128,7 +123,6 @@ async def fetch_friend_list(account: dict) -> list[str]:
     from playwright.async_api import async_playwright
 
     proxy_url = account.get("proxy", "") or ""
-    proxy_config = _parse_proxy_url(proxy_url)
 
     try:
         cookies = parse_cookie_json(account["cookie"])
@@ -140,11 +134,8 @@ async def fetch_friend_list(account: dict) -> list[str]:
     async with async_playwright() as p:
         browser = None
         try:
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=proxy_config,
-            )
-            context = await browser.new_context()
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(proxy=_parse_proxy_url(proxy_url))
             await context.add_cookies([c.to_playwright_cookie() for c in cookies])
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
@@ -156,9 +147,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
 
             await page.wait_for_timeout(3000)
 
-            # 获取会话列表项
             conversation_items = page.locator('[class*="conversationItem"], [class*="ConversationItem"], .SearchPanelitembox, [class*="chatItem"]').all()
-
             for item in conversation_items:
                 try:
                     name_el = item.locator('[class*="name"], [class*="Name"], [class*="title"], [class*="Title"]').first()
@@ -200,7 +189,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     if proxy_url:
         result.channel = "socks"
 
-    proxy_config = _parse_proxy_url(proxy_url)
     proxy_label = _safe_proxy_label(proxy_url)
     log.info("👤 [%s] 账号：%s", proxy_label, account["name"])
 
@@ -232,11 +220,10 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
             browser = await p.chromium.launch(
                 headless=headless,
-                proxy=proxy_config,
                 **({"executablePath": browser_path} if browser_path else {}),
             )
 
-            context = await browser.new_context()
+            context = await browser.new_context(proxy=_parse_proxy_url(proxy_url))
             await context.add_cookies([c.to_playwright_cookie() for c in cookies])
 
             page = await context.new_page()
@@ -451,39 +438,34 @@ async def _test_proxy_async(proxy_url: str) -> dict:
     """异步测试代理并获取归属地"""
     from playwright.async_api import async_playwright
 
-    proxy_config = _parse_proxy_url(proxy_url)
-    if not proxy_config:
-        return {"ok": False, "message": "代理格式错误"}
+    if not proxy_url:
+        return {"ok": False, "message": "代理 URL 为空"}
 
     async with async_playwright() as p:
         browser = None
         try:
-            browser = await p.chromium.launch(
-                headless=True,
-                proxy=proxy_config,
-            )
-            context = await browser.new_context()
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(proxy=_parse_proxy_url(proxy_url))
             page = await context.new_page()
             
-            # 访问 ipapi.co 获取归属地
-            await page.goto("https://ipapi.co/json/", wait_until="domcontentloaded", timeout=15000)
+            # 使用 httpbin 测试
+            await page.goto("https://httpbin.org/ip", wait_until="domcontentloaded", timeout=15000)
             await page.wait_for_timeout(2000)
             
-            # 获取页面内容
             text = await page.evaluate("() => document.body.innerText")
             
             try:
                 data = json.loads(text)
                 return {
                     "ok": True,
-                    "country": data.get("country_name", ""),
-                    "region": data.get("region", ""),
-                    "country_code": data.get("country_code", ""),
-                    "ip": data.get("ip", ""),
-                    "message": f"✅ {data.get('country_name', '')} {data.get('region', '')} ({data.get('ip', '')})",
+                    "country": "",
+                    "region": "",
+                    "country_code": "",
+                    "ip": data.get("origin", ""),
+                    "message": f"✅ 测试成功 ({data.get('origin', '')})",
                 }
             except json.JSONDecodeError:
-                return {"ok": False, "message": "无法解析归属地信息"}
+                return {"ok": False, "message": "无法解析响应"}
                 
         except Exception as e:
             return {"ok": False, "message": f"测试失败: {e}"}

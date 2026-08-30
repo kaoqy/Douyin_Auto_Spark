@@ -105,7 +105,10 @@ async function loadDashboard() {
     loadQuote();
     renderRecentTasks(tasks.slice(0, 6));
     renderDashAccounts(accounts);
-  } catch (e) { toast('加载仪表盘失败', 'err'); }
+  } catch (e) {
+    console.error('仪表盘加载失败:', e);
+    toast('加载仪表盘失败: ' + e.message, 'err');
+  }
 }
 
 function card(lbl, num, cls, suffix = '') {
@@ -141,12 +144,10 @@ function statusBadge(s) {
   return `<span class="badge ${cls}">${lab} ${s === 'success' ? '成功' : s === 'partial' ? '部分' : s === 'failed' ? '失败' : s === 'running' ? '运行中' : '未知'}</span>`;
 }
 
-async function loadTrend() {
+function loadTrend(tasks) {
   const box = $('#trendChart');
   if (!box) return;
   try {
-    const resp = await api.get('/api/tasks?limit=50');
-    const tasks = resp.tasks || [];
     const days = {};
     tasks.forEach(t => {
       if (!t.started_at) return;
