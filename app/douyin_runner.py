@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -29,18 +30,6 @@ SCREENSHOT_DIR = Path(os.environ.get("DAS_DATA_DIR", str(Path(__file__).resolve(
 
 
 @dataclass
-class RunResult:
-    """单次续火结果"""
-    status: str = "pending"          # success / failed / skipped
-    channel: str = "direct"          # direct / socks
-    message: str = ""
-    total: int = 0
-    success: int = 0
-    fail: int = 0
-    detail: list[dict] = field(default_factory=list)
-
-
-@dataclass
 class AccountResult:
     """单个账号的续火结果"""
     account_id: int
@@ -54,11 +43,7 @@ class AccountResult:
     detail: list[dict] = field(default_factory=list)
 
 
-def _now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-
-def _safe_channel_label(channel: str, proxy_url: str) -> str:
+def _safe_channel_label(channel: str) -> str:
     """日志只记录安全的通道摘要"""
     if channel == "socks":
         return "SOCKS5 代理"
@@ -82,7 +67,6 @@ def _parse_proxy_url(proxy_url: str) -> dict | None:
     if not proxy_url:
         return None
     try:
-        # socks5://user:pass@host:port
         m = re.match(r'socks5://(?:(?P<user>[^:@]+):(?P<pass>[^@]*)@)?(?P<host>[^:]+):(?P<port>\d+)', proxy_url)
         if not m:
             return None
@@ -97,15 +81,14 @@ def _parse_proxy_url(proxy_url: str) -> dict | None:
         return None
 
 
-async def verify_cookie(account: dict) -> dict:
+async def verify_cookie(cookie: str, proxy: str = "") -> dict:
     """验证账号 Cookie 是否有效"""
     from playwright.async_api import async_playwright
 
-    proxy_url = account.get("proxy", "") or ""
     proxy_config = _parse_proxy_url(proxy_url)
-
+    
     try:
-        cookies = parse_cookie_json(account["cookie"])
+        cookies = parse_cookie_json(cookie)
     except Exception as e:
         return {"valid": False, "message": f"Cookie 解析失败: {e}"}
 
@@ -121,14 +104,12 @@ async def verify_cookie(account: dict) -> dict:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            # 等待搜索框或登录提示
             search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
             visible = await search_input.wait_for(state="visible", timeout=15000).then(lambda: True).catch(lambda: False)
 
             if visible:
                 return {"valid": True, "message": "Cookie 有效"}
 
-            # 检查是否需要登录
             login_btn = page.locator('text=登录, text=扫码登录').first()
             if await login_btn.is_visible(timeout=3000):
                 return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
@@ -168,22 +149,18 @@ async def fetch_friend_list(account: dict) -> list[str]:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            # 等待搜索框出现
             search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
             visible = await search_input.wait_for(state="visible", timeout=15000).then(lambda: True).catch(lambda: False)
             if not visible:
                 return []
 
-            # 等待会话列表加载
             await page.wait_for_timeout(3000)
 
-            # 获取会话列表中的好友名称
-            # 抖音聊天页会话列表项
+            # 获取会话列表项
             conversation_items = page.locator('[class*="conversationItem"], [class*="ConversationItem"], .SearchPanelitembox, [class*="chatItem"]').all()
 
             for item in conversation_items:
                 try:
-                    # 尝试获取名称
                     name_el = item.locator('[class*="name"], [class*="Name"], [class*="title"], [class*="Title"]').first()
                     name = await name_el.text_content(timeout=2000)
                     if name and name.strip():
@@ -191,9 +168,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
                 except Exception:
                     pass
 
-            # 如果上面的选择器没找到，尝试更通用的方式
             if not friends:
-                # 获取所有会话项文本
                 all_items = page.locator('.SearchPanelitembox, [class*="conversation"], [class*="chatItem"]').all()
                 for item in all_items:
                     try:
@@ -209,7 +184,6 @@ async def fetch_friend_list(account: dict) -> list[str]:
             if browser:
                 await browser.close()
 
-    # 去重
     return list(dict.fromkeys(friends))
 
 
@@ -230,7 +204,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     proxy_label = _safe_proxy_label(proxy_url)
     log.info("👤 [%s] 账号：%s", proxy_label, account["name"])
 
-    # 获取该账号启用的好友
     targets = database.get_enabled_targets(account["id"])
     if not targets:
         result.status = "skipped"
@@ -240,7 +213,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
     result.total = len(targets)
 
-    # 解析 Cookie
     try:
         cookies = parse_cookie_json(account["cookie"])
     except Exception as e:
@@ -249,7 +221,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
         log.error("  [%s] Cookie 解析失败：%s", account["name"], e)
         return result
 
-    # 获取消息模板
     message_template = database.get_setting("message_template", "")
     include_source = database.get_setting("yiyan_include_source", "1") == "1"
 
@@ -271,7 +242,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            # 等待搜索框出现
             search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
             search_visible = await search_input.wait_for(
                 state="visible", timeout=CHAT_PAGE_READY_TIMEOUT
@@ -284,10 +254,8 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 await _capture_screenshot(page, f"{account['name']}-cookie-expired")
                 return result
 
-            # 等待会话列表就绪
             await _wait_chat_list_ready(page, account["name"])
 
-            # 依次处理每个好友
             missing_names: list[str] = []
             for target in targets:
                 target_name = target["name"]
@@ -309,7 +277,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     result.fail += 1
                     continue
 
-                # 点击「发消息」或进入会话
+                # 点击「发消息」
                 try:
                     send_btn = search_result.locator('text=发消息, text=发私信').first()
                     if await send_btn.is_visible(timeout=3000):
@@ -327,8 +295,8 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 # 定位输入框 - 尝试多种选择器
                 editor_input = None
                 selectors = [
-                    '[data-slate-editor="true"][contenteditable="true"]',
                     '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]',
+                    '[data-slate-editor="true"][contenteditable="true"]',
                     '[contenteditable="true"][data-slate-editor="true"]',
                     '.public-DraftEditor-content',
                     '[contenteditable="true"]',
@@ -363,9 +331,8 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     include_source=include_source,
                 )
 
-                # 输入消息
-                await editor_input.fill("")
-                await page.keyboard.type(msg, delay=30)
+                # 输入消息 - 使用 insertText 更可靠
+                await page.keyboard.insert_text(msg)
                 await page.wait_for_timeout(500)
                 await page.keyboard.press("Enter")
                 log.info("  [%s] 已发送消息：%s", account["name"], target_name)
@@ -381,7 +348,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
             await page.wait_for_timeout(3000)
 
-            # 汇总
             if missing_names:
                 result.message = f"以下会话未找到：{'、'.join(missing_names)}"
                 if result.success > 0:
@@ -429,7 +395,6 @@ async def _search_conversation(
 
     for attempt in range(1, SEARCH_RETRY_LIMIT + 1):
         await search_input.fill("")
-        # 等旧结果消失
         try:
             await page.locator(".SearchPanelitembox").first().wait_for(
                 state="hidden", timeout=SEARCH_RESULT_TIMEOUT
@@ -472,9 +437,66 @@ def run_account_spark_sync(account: dict, task_id: str) -> AccountResult:
 
 def verify_cookie_sync(cookie: str, proxy: str = "") -> dict:
     """同步包装器：验证 Cookie"""
-    return asyncio.run(verify_cookie({"cookie": cookie, "proxy": proxy}))
+    return asyncio.run(verify_cookie(cookie, proxy))
 
 
 def fetch_friend_list_sync(account: dict) -> list[str]:
     """同步包装器：获取好友列表"""
     return asyncio.run(fetch_friend_list(account))
+
+
+# ==================== 代理测试与归属地检测 ====================
+
+async def _test_proxy_async(proxy_url: str) -> dict:
+    """异步测试代理并获取归属地"""
+    from playwright.async_api import async_playwright
+
+    proxy_config = _parse_proxy_url(proxy_url)
+    if not proxy_config:
+        return {"ok": False, "message": "代理格式错误"}
+
+    async with async_playwright() as p:
+        browser = None
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                proxy=proxy_config,
+            )
+            context = await browser.new_context()
+            page = await context.new_page()
+            
+            # 访问 ipapi.co 获取归属地
+            await page.goto("https://ipapi.co/json/", wait_until="domcontentloaded", timeout=15000)
+            await page.wait_for_timeout(2000)
+            
+            # 获取页面内容
+            text = await page.evaluate("() => document.body.innerText")
+            
+            try:
+                data = json.loads(text)
+                return {
+                    "ok": True,
+                    "country": data.get("country_name", ""),
+                    "region": data.get("region", ""),
+                    "country_code": data.get("country_code", ""),
+                    "ip": data.get("ip", ""),
+                    "message": f"✅ {data.get('country_name', '')} {data.get('region', '')} ({data.get('ip', '')})",
+                }
+            except json.JSONDecodeError:
+                return {"ok": False, "message": "无法解析归属地信息"}
+                
+        except Exception as e:
+            return {"ok": False, "message": f"测试失败: {e}"}
+        finally:
+            if browser:
+                await browser.close()
+
+
+def test_proxy_sync(proxy_url: str) -> dict:
+    """同步包装器：测试代理"""
+    return asyncio.run(_test_proxy_async(proxy_url))
+
+
+def detect_geo_sync(proxy_url: str) -> dict:
+    """同步包装器：检测归属地"""
+    return asyncio.run(_test_proxy_async(proxy_url))

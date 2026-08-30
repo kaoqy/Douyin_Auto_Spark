@@ -145,7 +145,8 @@ async function loadTrend() {
   const box = $('#trendChart');
   if (!box) return;
   try {
-    const tasks = (await api.get('/api/tasks?limit=50')).tasks || [];
+    const resp = await api.get('/api/tasks?limit=50');
+    const tasks = resp.tasks || [];
     const days = {};
     tasks.forEach(t => {
       if (!t.started_at) return;

@@ -6,6 +6,7 @@ import time
 from fastapi import APIRouter, HTTPException
 
 from .. import database
+from ..douyin_runner import test_proxy_sync, detect_geo_sync
 
 router = APIRouter(prefix="/api/proxies", tags=["proxies"])
 
@@ -49,7 +50,6 @@ def list_proxies():
 @router.post("")
 def create_proxy(data: dict):
     payload = dict(data)
-    # 若有链接则从链接解析字段
     if payload.get("url"):
         parsed = _parse_link(payload["url"])
         for k, v in parsed.items():
@@ -70,10 +70,8 @@ def update_one(proxy_id: int, data: dict):
     if not existing:
         raise HTTPException(404, "代理不存在")
     payload = {k: v for k, v in data.items() if v is not None}
-    # 前端不会回填密码，打码占位符一律忽略
     if payload.get("password") in ("***", "•••"):
         payload.pop("password", None)
-    # 若更新了 url，重新解析
     if "url" in payload and payload["url"]:
         parsed = _parse_link(payload["url"])
         for k, v in parsed.items():
@@ -102,46 +100,29 @@ def test_proxy(proxy_id: int):
     if not p:
         raise HTTPException(404, "代理不存在")
     url = p.get("url") or database.build_proxy_url(p)
-    # 简单测试：尝试通过代理访问一个服务
+    
     started = time.perf_counter()
-    try:
-        import urllib.request
-        import socket
-        # 设置代理
-        proxy_handler = urllib.request.ProxyHandler({
-            'http': url,
-            'https': url,
-        })
-        opener = urllib.request.build_opener(proxy_handler)
-        urllib.request.install_opener(opener)
-        # 测试访问
-        req = urllib.request.Request('http://httpbin.org/ip', headers={'User-Agent': 'Mozilla/5.0'})
-        resp = urllib.request.urlopen(req, timeout=15)
-        resp.read()
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        message = f"✅ 测试成功 · {elapsed_ms} ms"
-        database.update_proxy(proxy_id, {
-            "last_test": "ok",
-            "last_latency_ms": elapsed_ms,
-            "last_test_at": database._now(),
-            "last_test_message": message,
-        })
-        return {"ok": True, "message": message, "latency_ms": elapsed_ms}
-    except Exception as e:
-        elapsed_ms = int((time.perf_counter() - started) * 1000)
-        message = f"❌ 测试失败: {e} · {elapsed_ms} ms"
-        database.update_proxy(proxy_id, {
-            "last_test": "fail",
-            "last_latency_ms": elapsed_ms,
-            "last_test_at": database._now(),
-            "last_test_message": message,
-        })
-        return {"ok": False, "message": message, "latency_ms": elapsed_ms}
+    result = test_proxy_sync(url)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    
+    ok = result.get("ok", False)
+    message = result.get("message", "")
+    if ok and not message.endswith("ms"):
+        message += f" · {elapsed_ms} ms"
+    
+    database.update_proxy(proxy_id, {
+        "last_test": "ok" if ok else "fail",
+        "last_latency_ms": elapsed_ms,
+        "last_test_at": database._now(),
+        "last_test_message": message,
+    })
+    
+    return {"ok": ok, "message": message, "latency_ms": elapsed_ms, "geo": result}
 
 
 @router.post("/detect")
 def detect_url(data: dict):
-    """识别归属地（不保存）。data: {proxy_id} 或 {url} 或 {ip,port,username,password}"""
+    """识别归属地（不保存）。"""
     pid = data.get("proxy_id")
     url = ""
     if pid:
@@ -161,5 +142,6 @@ def detect_url(data: dict):
         })
     if not url:
         raise HTTPException(400, "缺少链接或 IP")
-    # 简单返回，不实际检测
-    return {"ok": True, "ip": url.split("@")[-1].split(":")[0] if "@" in url else url.split(":")[1]}
+    
+    result = detect_geo_sync(url)
+    return {k: v for k, v in result.items() if k != "_t"}

@@ -101,8 +101,7 @@ def verify_cookie(body: dict[str, Any]):
     if not cookie:
         raise HTTPException(status_code=400, detail="Cookie 不能为空")
     try:
-        account = {"cookie": cookie, "proxy": proxy}
-        result = verify_cookie_sync(account)
+        result = verify_cookie_sync(cookie, proxy)
         return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -114,7 +113,7 @@ def verify_account_cookie(account_id: int):
     acc = database.get_account(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
-    result = verify_cookie_sync(acc)
+    result = verify_cookie_sync(acc.get("cookie", ""), acc.get("proxy", ""))
     return result
 
 
