@@ -1,17 +1,18 @@
 # 抖音自动续火花管理面板
 
-基于 FastAPI + SQLite + Playwright 的抖音自动续火花管理面板，支持多账号、多好友、定时任务、SOCKS 代理、随机一言等功能。
+基于 FastAPI + SQLite + Playwright 的抖音自动续火花管理面板，支持多账号、多好友、定时任务、SOCKS 代理、随机一言、Telegram 推送等功能。
 
 ## 功能
 
 - 🎭 **Cookie 登录** - 通过 Cookie-Editor 导出抖音 Cookie，无需账号密码
-- 👥 **多账号管理** - 支持添加多个抖音账号
+- 👥 **多账号管理** - 支持添加多个抖音账号，独立配置代理
 - 💬 **多好友续火** - 每个账号可配置多个续火好友
-- 🎯 **随机一言** - 从内置一言库随机挑选消息发送
+- 📝 **随机一言** - 从内置一言库随机挑选消息发送，支持自定义模板
 - ⏰ **定时续火** - 通过 APScheduler 定时自动续火
 - 🔒 **SOCKS 代理** - 支持为账号配置 SOCKS5 代理
-- 📊 **日志查看** - 查看续火历史日志
-- 🌐 **Web 管理面板** - 简洁的 Web 界面管理所有配置
+- 📊 **日志查看** - 查看续火历史日志，支持搜索和筛选
+- 📮 **TG 推送** - 续火结果推送到 Telegram，支持每日一言
+- 🌐 **Web 管理面板** - 仿微博签到风格的 Web 界面
 
 ## 快速开始
 
@@ -24,7 +25,7 @@ docker pull kaoqy666/douyin-auto-spark:latest
 # 启动（替换为你的管理员密码）
 docker run -d \
   --name douyin-auto-spark \
-  -p 8000:8000 \
+  -p 8001:8000 \
   -e DAS_ADMIN_USER=admin \
   -e DAS_ADMIN_PASSWORD=your_secure_password \
   -v douyin_data:/app/data \
@@ -34,7 +35,7 @@ docker run -d \
 # 查看日志
 docker logs -f douyin-auto-spark
 
-# 访问 http://localhost:8000
+# 访问 http://localhost:8001
 ```
 
 ### 方式二：Docker Compose
@@ -49,7 +50,7 @@ docker compose up -d
 # 查看日志
 docker compose logs -f
 
-# 访问 http://localhost:8000
+# 访问 http://localhost:8001
 ```
 
 **docker-compose.yml：**
@@ -61,7 +62,7 @@ services:
     container_name: douyin-auto-spark
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8001:8000"
     environment:
       - TZ=Asia/Shanghai
       - DAS_ADMIN_USER=admin
@@ -78,14 +79,22 @@ pip install -r requirements.txt
 playwright install chromium
 
 # 启动
-python run.py --host 0.0.0.0 --port 8000
+python run.py --host 0.0.0.0 --port 8001
 
-# 访问 http://localhost:8000
+# 访问 http://localhost:8001
 ```
 
-## 配置说明
+## 首次访问
 
-首次访问 http://localhost:8000 会引导创建管理员账号。
+首次访问 http://localhost:8001 会引导创建管理员账号：
+
+1. **初始化页面** - 输入管理员用户名和密码（至少 6 位）
+2. **登录** - 使用刚创建的账号登录
+3. **添加账号** - 在「账号管理」页添加抖音 Cookie
+4. **配置好友** - 在「好友管理」页添加续火好友
+5. **设置定时** - 在「设置」页配置 Cron 表达式
+
+## 配置说明
 
 ### 添加账号
 
@@ -109,7 +118,7 @@ python run.py --host 0.0.0.0 --port 8000
 | `DAS_ADMIN_USER` | `admin` | 管理员用户名 |
 | `DAS_ADMIN_PASSWORD` | `admin123` | 管理员密码 |
 | `APP_HOST` | `0.0.0.0` | 监听地址 |
-| `APP_PORT` | `8000` | 监听端口 |
+| `APP_PORT` | `8000` | 监听端口（容器内） |
 | `DAS_DATA_DIR` | `./data` | 数据目录 |
 | `PLAYWRIGHT_HEADLESS` | `1` | 无头模式 |
 | `TZ` | `Asia/Shanghai` | 时区 |
