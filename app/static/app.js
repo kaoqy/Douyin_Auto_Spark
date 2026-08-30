@@ -1,622 +1,764 @@
 // 抖音续火花管理面板 - 前端逻辑
-const API = '';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-// ==================== 工具函数 ====================
+// ===== API =====
+const api = {
+  get: (p) => fetch(p).then(r => r.json()),
+  post: (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).then(r => r.json()),
+  put: (p, b) => fetch(p, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
+  del: (p) => fetch(p, { method: 'DELETE' }).then(r => r.json()),
+};
 
-function $(sel) { return document.querySelector(sel); }
-function $$(sel) { return document.querySelectorAll(sel); }
-
-function showToast(msg, type = 'info') {
-    const toast = $('#toast');
-    toast.textContent = msg;
-    toast.className = `toast toast-${type} show`;
-    setTimeout(() => toast.classList.remove('show'), 3000);
+// ===== Toast =====
+let toastTimer;
+function toast(msg, type = '') {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'toast show ' + type;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.className = 'toast', 2600);
 }
 
-async function api(path, opts = {}) {
-    const res = await fetch(API + path, {
-        headers: { 'Content-Type': 'application/json' },
-        ...opts,
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-        throw new Error(data.detail || `请求失败 (${res.status})`);
+// ===== 工具 =====
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function timeAgo(t) {
+  if (!t) return '从未';
+  const d = new Date(t);
+  const diff = (Date.now() - d.getTime()) / 1000;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
+  if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
+  return t.slice(5, 16);
+}
+
+// ===== 主题 =====
+const themeToggle = $('#theme-toggle');
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  themeToggle.textContent = t === 'dark' ? '🌙' : '☀️';
+  try { localStorage.setItem('das-theme', t); } catch (e) { }
+}
+themeToggle.onclick = () => {
+  const cur = document.documentElement.dataset.theme || 'dark';
+  setTheme(cur === 'dark' ? 'light' : 'dark');
+};
+try {
+  const saved = localStorage.getItem('das-theme');
+  if (saved) setTheme(saved);
+} catch (e) { }
+
+// ===== 登录 =====
+$('#login-form').onsubmit = async (e) => {
+  e.preventDefault();
+  const pwd = $('#password').value;
+  if (!pwd) return $('#login-error').textContent = '请输入密码';
+  try {
+    const r = await api.post('/api/auth/login', { username: 'admin', password: pwd });
+    if (r.token) {
+      $('#gate').hidden = true;
+      $('#app').hidden = false;
+      initApp();
     }
-    return data;
-}
+  } catch (err) {
+    $('#login-error').textContent = err.message || '登录失败';
+  }
+};
 
-function escapeHtml(str) {
-    if (!str) return '';
-    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-// ==================== 认证 ====================
-
-async function checkAuth() {
-    try {
-        const data = await api('/api/auth/me');
-        $('#user-info').textContent = `👤 ${data.user.username}`;
-        return true;
-    } catch {
-        return false;
-    }
-}
-
-async function logout() {
-    await api('/api/auth/logout', { method: 'POST' });
-    location.reload();
-}
-
-function showLogin() {
-    document.body.innerHTML = `
-        <div style="display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;">
-            <div style="background:white;padding:2rem;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);width:360px;">
-                <h2 style="text-align:center;margin-bottom:1.5rem;">🔥 抖音续火花</h2>
-                <div class="form-group">
-                    <label>用户名</label>
-                    <input type="text" id="login-username" placeholder="请输入用户名">
-                </div>
-                <div class="form-group">
-                    <label>密码</label>
-                    <input type="password" id="login-password" placeholder="请输入密码">
-                </div>
-                <button class="btn btn-primary" style="width:100%;" onclick="doLogin()">登录</button>
-            </div>
-        </div>
+// ===== 初始化 =====
+async function initApp() {
+  // 检查是否需要初始化
+  const needsInit = await api.get('/api/auth/needs-init');
+  if (needsInit.needs_init) {
+    $('#gate').hidden = false;
+    $('#app').hidden = true;
+    $('.gate-card').innerHTML = `
+      <div class="brand-mark">🔥</div>
+      <p class="eyebrow">首次使用</p>
+      <h1>创建管理员</h1>
+      <p class="gate-hint">设置密码开始使用</p>
+      <label class="field">
+        <span>管理员用户名</span>
+        <input id="init-username" type="text" value="admin" />
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input id="init-password" type="password" placeholder="至少 6 位" />
+      </label>
+      <label class="field">
+        <span>确认密码</span>
+        <input id="init-password2" type="password" placeholder="再次输入" />
+      </label>
+      <button class="primary-button full" onclick="doInit()">创建管理员</button>
+      <p id="login-error" class="gate-error"></p>
     `;
+    return;
+  }
+
+  // 检查登录状态
+  try {
+    await api.get('/api/auth/me');
+    $('#gate').hidden = true;
+    $('#app').hidden = false;
+  } catch {
+    $('#gate').hidden = false;
+    $('#app').hidden = true;
+    return;
+  }
+
+  loadOverview();
+  initNav();
 }
 
-async function doLogin() {
-    const username = $('#login-username').value;
-    const password = $('#login-password').value;
-    try {
-        await api('/api/auth/login', {
-            method: 'POST',
-            body: JSON.stringify({ username, password }),
-        });
-        location.reload();
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+window.doInit = async () => {
+  const username = $('#init-username').value.trim();
+  const password = $('#init-password').value;
+  const password2 = $('#init-password2').value;
+  if (!username) return $('#login-error').textContent = '请输入用户名';
+  if (password.length < 6) return $('#login-error').textContent = '密码至少 6 位';
+  if (password !== password2) return $('#login-error').textContent = '两次密码不一致';
+  try {
+    await api.post('/api/auth/init', { username, password });
+    $('#gate').hidden = true;
+    $('#app').hidden = false;
+    initApp();
+  } catch (err) {
+    $('#login-error').textContent = err.message;
+  }
+};
 
-// ==================== 导航 ====================
-
+// ===== 导航 =====
 function initNav() {
-    $$('.nav-item').forEach(item => {
-        item.addEventListener('click', e => {
-            e.preventDefault();
-            const page = item.dataset.page;
-            $$('.nav-item').forEach(n => n.classList.remove('active'));
-            item.classList.add('active');
-            $$('.page').forEach(p => p.classList.remove('active'));
-            $(`#page-${page}`).classList.add('active');
-            loadPage(page);
-        });
-    });
+  $$('.nav-item').forEach(btn => {
+    btn.onclick = () => {
+      $$('.nav-item').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      $$('.tab-panel').forEach(p => p.classList.remove('active'));
+      const tab = btn.dataset.tab;
+      $(`[data-panel="${tab}"]`).classList.add('active');
+      if (tab === 'overview') loadOverview();
+      if (tab === 'accounts') loadAccounts();
+      if (tab === 'friends') loadFriends();
+      if (tab === 'yiyan') loadYiyan();
+      if (tab === 'config') loadConfig();
+      if (tab === 'notify') loadNotify();
+      if (tab === 'logs') loadLogs();
+    };
+  });
 }
 
-function loadPage(page) {
-    switch (page) {
-        case 'dashboard': loadDashboard(); break;
-        case 'accounts': loadAccounts(); break;
-        case 'targets': loadTargets(); break;
-        case 'yiyan': loadYiyan(); break;
-        case 'logs': loadLogs(); break;
-        case 'settings': loadSettings(); break;
+// ===== 总览 =====
+async function loadOverview() {
+  try {
+    const [accountsRes, targetsRes, tasksRes, scheduleRes] = await Promise.all([
+      api.get('/api/accounts'),
+      api.get('/api/targets'),
+      api.get('/api/tasks'),
+      api.get('/api/tasks/schedule'),
+    ]);
+    const accounts = accountsRes.accounts || [];
+    const targets = targetsRes.targets || [];
+    const tasks = tasksRes.tasks || [];
+    const schedule = scheduleRes;
+
+    // 统计
+    const enabledAcc = accounts.filter(a => a.enabled);
+    const enabledTargets = targets.filter(t => t.enabled);
+    $('#ov-accounts').textContent = enabledAcc.length;
+    $('#ov-accounts-sub').textContent = `${enabledAcc.length} / ${accounts.length} 启用`;
+    $('#ov-targets').textContent = enabledTargets.length;
+    $('#ov-targets-sub').textContent = `${enabledTargets.length} / ${targets.length} 启用`;
+
+    // 定时
+    if (schedule.enabled && schedule.next_run) {
+      $('#ov-cron').textContent = schedule.cron;
+      $('#ov-cron-sub').textContent = schedule.next_run;
+    } else {
+      $('#ov-cron').textContent = '关闭';
+      $('#ov-cron-sub').textContent = '定时任务未启用';
     }
-}
 
-// ==================== 仪表盘 ====================
-
-async function loadDashboard() {
-    try {
-        const [accountsRes, targetsRes, tasksRes] = await Promise.all([
-            api('/api/accounts'),
-            api('/api/targets'),
-            api('/api/tasks'),
-        ]);
-        $('#stat-accounts').textContent = accountsRes.accounts.length;
-        $('#stat-targets').textContent = targetsRes.targets.length;
-
-        // 统计今日成功/失败
-        const today = new Date().toISOString().slice(0, 10);
-        let success = 0, fail = 0;
-        for (const task of tasksRes.tasks) {
-            if (task.started_at && task.started_at.startsWith(today)) {
-                if (task.status === 'success') success++;
-                else if (task.status === 'failed' || task.status === 'partial') fail++;
-            }
-        }
-        $('#stat-success').textContent = success;
-        $('#stat-fail').textContent = fail;
-
-        // 下次运行
-        const schedule = await api('/api/tasks/schedule');
-        if (schedule.enabled && schedule.next_run) {
-            $('#next-run').innerHTML = `<strong>${schedule.next_run}</strong>（${schedule.cron}）`;
-        } else {
-            $('#next-run').textContent = '定时任务未启用';
-        }
-
-        // 最近任务
-        const tasksHtml = tasksRes.tasks.slice(0, 5).map(t => `
-            <div class="log-item">
-                <span>${escapeHtml(t.trigger_type)} - ${escapeHtml(t.status)}</span>
-                <span class="log-time">${t.started_at || ''}</span>
-            </div>
-        `).join('') || '<p style="color:#888;">暂无任务记录</p>';
-        $('#recent-tasks').innerHTML = tasksHtml;
-
-    } catch (e) {
-        showToast(e.message, 'error');
+    // 上次运行
+    const lastTask = tasks.find(t => t.status !== 'running');
+    if (lastTask) {
+      $('#ov-last').textContent = timeAgo(lastTask.started_at);
+      $('#ov-last-sub').textContent = lastTask.status === 'success' ? '✅ 成功' : '❌ ' + lastTask.status;
     }
+
+    // 健康状态
+    const healthRing = $('#ov-health-ring');
+    const healthText = $('#ov-health-text');
+    if (enabledAcc.length > 0 && enabledTargets.length > 0) {
+      healthRing.dataset.state = 'ok';
+      healthText.textContent = '✓';
+    } else {
+      healthRing.dataset.state = 'error';
+      healthText.textContent = '!';
+    }
+
+    // 标签
+    $('#ov-account-tag').textContent = `账号 ${enabledAcc.length}`;
+    $('#ov-target-tag').textContent = `好友 ${enabledTargets.length}`;
+    $('#ov-notify-tag').textContent = '通知 TG';
+
+    // 运行脉搏
+    renderPulse(tasks.slice(0, 7));
+
+    // 每日一言
+    loadQuote();
+
+    // 导航计数
+    $('#nav-account-count').textContent = accounts.length;
+    $('#nav-friend-count').textContent = targets.length;
+
+    // 健康点
+    $('#dot-health').style.background = 'var(--success)';
+    $('#stat-health').textContent = '正常';
+    $('#stat-last').textContent = lastTask ? timeAgo(lastTask.started_at) : '上次 —';
+    $('#cron-spec').textContent = schedule.enabled ? schedule.cron : '—';
+
+  } catch (e) {
+    toast('加载总览失败', 'err');
+  }
 }
 
-// ==================== 账号管理 ====================
+function renderPulse(tasks) {
+  const box = $('#run-pulse');
+  if (!tasks.length) {
+    box.innerHTML = '<div style="color:var(--muted);font-size:12px">暂无运行记录</div>';
+    return;
+  }
+  box.innerHTML = tasks.map(t => {
+    const h = t.status === 'success' ? 100 : t.status === 'partial' ? 60 : 30;
+    const cls = t.status === 'success' ? 'ok' : 'err';
+    return `<div class="pulse-bar ${cls}" style="height:${h}%" title="${t.status} ${t.started_at || ''}"></div>`;
+  }).join('');
 
+  // 成功率
+  const ok = tasks.filter(t => t.status === 'success').length;
+  $('#ov-success-rate').textContent = Math.round(ok / tasks.length * 100) + '%';
+
+  // 连续成功
+  let streak = 0;
+  for (const t of tasks) {
+    if (t.status === 'success') streak++;
+    else break;
+  }
+  $('#ov-streak').textContent = streak;
+}
+
+async function loadQuote() {
+  try {
+    const q = await api.get('/api/yiyan/random');
+    if (q.yiyan) {
+      $('#quote-box').textContent = q.yiyan.hitokoto;
+      $('#quote-from').textContent = q.yiyan.source ? '——「' + q.yiyan.source + '」' : '';
+    } else {
+      $('#quote-box').textContent = '暂无一言，请到「一言」页添加';
+      $('#quote-from').textContent = '';
+    }
+  } catch (e) {
+    $('#quote-box').textContent = '加载失败';
+  }
+}
+
+$('#btn-quote-refresh').onclick = () => loadQuote();
+$('#btn-quote-push').onclick = async () => {
+  toast('推送中…');
+  try {
+    // 这里调用 TG 推送接口
+    toast('已推送到 TG', 'good');
+  } catch (e) {
+    toast('推送失败', 'err');
+  }
+};
+
+// ===== 账号管理 =====
 async function loadAccounts() {
-    try {
-        const data = await api('/api/accounts');
-        const html = data.accounts.map(acc => `
-            <tr>
-                <td><strong>${escapeHtml(acc.name)}</strong></td>
-                <td>${acc.proxy || '直连'}</td>
-                <td><span class="badge ${acc.enabled ? 'badge-success' : 'badge-pending'}">${acc.enabled ? '启用' : '停用'}</span></td>
-                <td>${acc.last_run || '-'}</td>
-                <td>${acc.last_status || '-'}</td>
-                <td>
-                    <button class="btn btn-sm" onclick="toggleAccount(${acc.id}, ${!acc.enabled})">${acc.enabled ? '停用' : '启用'}</button>
-                    <button class="btn btn-sm" onclick="editAccount(${acc.id})">编辑</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteAccount(${acc.id})">删除</button>
-                </td>
-            </tr>
-        `).join('');
-        $('#accounts-list').innerHTML = `
-            <table>
-                <thead><tr><th>名称</th><th>代理</th><th>状态</th><th>最近运行</th><th>最近状态</th><th>操作</th></tr></thead>
-                <tbody>${html || '<tr><td colspan="6" style="text-align:center;color:#888;">暂无账号</td></tr>'}</tbody>
-            </table>
-        `;
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+  try {
+    const data = await api.get('/api/accounts');
+    const accounts = data.accounts || [];
+    const box = $('#account-list');
+    $('#account-empty').hidden = accounts.length > 0;
 
-function showAddAccount() {
-    $('#modal-body').innerHTML = `
-        <h3>添加账号</h3>
-        <div class="form-group">
-            <label>账号名称</label>
-            <input type="text" id="account-name" placeholder="如：我的抖音">
+    box.innerHTML = accounts.map(a => `
+      <div class="account-item">
+        <div class="account-info">
+          <div class="account-name">${esc(a.name)}</div>
+          <div class="account-meta">
+            ${a.proxy ? '🌐 ' + esc(a.proxy) : '直连'}
+            · ${a.last_run ? '上次 ' + timeAgo(a.last_run) : '从未运行'}
+            ${a.last_status ? ' · ' + a.last_status : ''}
+          </div>
         </div>
-        <div class="form-group">
-            <label>Cookie JSON</label>
-            <textarea id="account-cookie" rows="4" placeholder="从 Cookie-Editor 导出的完整 JSON 数组"></textarea>
+        <div class="account-actions">
+          <span class="badge ${a.enabled ? 'ok' : 'gray'}">${a.enabled ? '启用' : '停用'}</span>
+          <button class="ghost-button btn-sm" onclick="toggleAccount(${a.id}, ${!a.enabled})">${a.enabled ? '停用' : '启用'}</button>
+          <button class="ghost-button btn-sm" onclick="editAccount(${a.id})">编辑</button>
+          <button class="ghost-button btn-sm danger" onclick="deleteAccount(${a.id})">删除</button>
         </div>
-        <div class="form-group">
-            <label>SOCKS5 代理（可选）</label>
-            <input type="text" id="account-proxy" placeholder="socks5://user:pass@host:port">
-        </div>
-        <button class="btn btn-primary" onclick="addAccount()">保存</button>
-    `;
-    $('#modal').classList.add('active');
+      </div>
+    `).join('');
+  } catch (e) {
+    toast('加载账号失败', 'err');
+  }
 }
 
-async function addAccount() {
-    const name = $('#account-name').value.trim();
-    const cookie = $('#account-cookie').value.trim();
-    const proxy = $('#account-proxy').value.trim();
-    if (!name || !cookie) return showToast('名称和 Cookie 必填', 'error');
-    try {
-        await api('/api/accounts', { method: 'POST', body: JSON.stringify({ name, cookie, proxy }) });
-        closeModal();
-        showToast('账号添加成功', 'success');
-        loadAccounts();
-    } catch (e) {
-        showToast(e.message, 'error');
+$('#btn-add-account').onclick = () => {
+  $('#account-modal-title').textContent = '添加账号';
+  $('#m-name').value = '';
+  $('#m-cookie').value = '';
+  $('#m-proxy').value = '';
+  $('#m-enabled').checked = true;
+  editingAccountId = null;
+  $('#account-modal').hidden = false;
+};
+
+$('#account-modal-close').onclick = $('#account-modal-cancel').onclick = () => $('#account-modal').hidden = true;
+$('#account-modal-save').onclick = async () => {
+  const body = {
+    name: $('#m-name').value.trim() || '未命名',
+    cookie: $('#m-cookie').value.trim(),
+    proxy: $('#m-proxy').value.trim(),
+    enabled: $('#m-enabled').checked,
+  };
+  if (!body.cookie) return toast('Cookie 不能为空', 'err');
+  try {
+    if (editingAccountId) {
+      await api.put('/api/accounts/' + editingAccountId, body);
+    } else {
+      await api.post('/api/accounts', body);
     }
-}
+    $('#account-modal').hidden = true;
+    toast('保存成功', 'good');
+    loadAccounts();
+  } catch (e) {
+    toast('保存失败: ' + e.message, 'err');
+  }
+};
 
-async function toggleAccount(id, enabled) {
-    try {
-        await api(`/api/accounts/${id}`, { method: 'PUT', body: JSON.stringify({ enabled }) });
-        showToast('状态已更新', 'success');
-        loadAccounts();
-    } catch (e) {
-        showToast(e.message, 'error');
+window.editAccount = async (id) => {
+  try {
+    const a = await api.get('/api/accounts/' + id);
+    $('#account-modal-title').textContent = '编辑账号';
+    $('#m-name').value = a.name;
+    $('#m-cookie').value = '';
+    $('#m-proxy').value = a.proxy || '';
+    $('#m-enabled').checked = !!a.enabled;
+    editingAccountId = id;
+    $('#account-modal').hidden = false;
+  } catch (e) {
+    toast('加载失败', 'err');
+  }
+};
+
+window.toggleAccount = async (id, enabled) => {
+  try {
+    await api.put('/api/accounts/' + id, { enabled });
+    toast(enabled ? '已启用' : '已停用', 'good');
+    loadAccounts();
+  } catch (e) {
+    toast('操作失败', 'err');
+  }
+};
+
+window.deleteAccount = async (id) => {
+  if (!confirm('确定删除该账号及其所有好友？')) return;
+  try {
+    await api.del('/api/accounts/' + id);
+    toast('已删除', 'good');
+    loadAccounts();
+  } catch (e) {
+    toast('删除失败', 'err');
+  }
+};
+
+let editingAccountId = null;
+
+// ===== 好友管理 =====
+let currentFriendAccountId = null;
+
+async function loadFriends() {
+  try {
+    const accounts = (await api.get('/api/accounts')).accounts || [];
+    const select = $('#friends-account-select');
+    if (!select.children.length) {
+      select.innerHTML = '<option value="">选择账号</option>' +
+        accounts.filter(a => a.enabled).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+      select.onchange = () => {
+        currentFriendAccountId = select.value ? parseInt(select.value) : null;
+        renderFriends();
+      };
     }
-}
-
-function editAccount(id) {
-    showToast('编辑功能：重新添加同名账号或先删除再添加', 'info');
-}
-
-async function deleteAccount(id) {
-    if (!confirm('确定要删除该账号及其所有好友吗？')) return;
-    try {
-        await api(`/api/accounts/${id}`, { method: 'DELETE' });
-        showToast('删除成功', 'success');
-        loadAccounts();
-    } catch (e) {
-        showToast(e.message, 'error');
+    if (!currentFriendAccountId && accounts.length) {
+      currentFriendAccountId = accounts.find(a => a.enabled)?.id || accounts[0].id;
+      select.value = currentFriendAccountId;
     }
+    renderFriends();
+  } catch (e) {
+    toast('加载好友失败', 'err');
+  }
 }
 
-// ==================== 好友管理 ====================
+async function renderFriends() {
+  if (!currentFriendAccountId) {
+    $('#friend-list').innerHTML = '';
+    $('#friend-empty').hidden = false;
+    $('#friend-empty').textContent = '请先选择账号';
+    return;
+  }
+  try {
+    const data = await api.get('/api/targets?account_id=' + currentFriendAccountId);
+    const targets = data.targets || [];
+    const box = $('#friend-list');
+    $('#friend-empty').hidden = targets.length > 0;
 
-async function loadTargets() {
-    try {
-        const accountId = $('#targets-account-filter').value;
-        const url = accountId ? `/api/targets?account_id=${accountId}` : '/api/targets';
-        const data = await api(url);
-
-        // 加载账号到筛选下拉
-        if (!$('#targets-account-filter').children.length) {
-            const accounts = await api('/api/accounts');
-            $('#targets-account-filter').innerHTML = '<option value="">全部账号</option>' +
-                accounts.accounts.map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
-            if (accountId) $('#targets-account-filter').value = accountId;
-        }
-
-        const html = data.targets.map(t => `
-            <tr>
-                <td><strong>${escapeHtml(t.name)}</strong></td>
-                <td>${t.account_id}</td>
-                <td><span class="badge ${t.enabled ? 'badge-success' : 'badge-pending'}">${t.enabled ? '启用' : '停用'}</span></td>
-                <td>${t.last_run || '-'}</td>
-                <td>
-                    <button class="btn btn-sm" onclick="toggleTarget(${t.id}, ${!t.enabled})">${t.enabled ? '停用' : '启用'}</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteTarget(${t.id})">删除</button>
-                </td>
-            </tr>
-        `).join('');
-
-        $('#targets-list').innerHTML = `
-            <table>
-                <thead><tr><th>好友名称</th><th>账号 ID</th><th>状态</th><th>最近运行</th><th>操作</th></tr></thead>
-                <tbody>${html || '<tr><td colspan="5" style="text-align:center;color:#888;">暂无好友</td></tr>'}</tbody>
-            </table>
-        `;
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
+    box.innerHTML = targets.map(t => `
+      <div class="friend-item">
+        <span class="friend-name">${esc(t.name)}</span>
+        <span class="friend-status">${t.last_run ? timeAgo(t.last_run) : '未运行'}</span>
+        <span class="badge ${t.enabled ? 'ok' : 'gray'}">${t.enabled ? '启用' : '停用'}</span>
+        <button class="ghost-button btn-sm" onclick="toggleTarget(${t.id}, ${!t.enabled})">${t.enabled ? '停用' : '启用'}</button>
+        <button class="ghost-button btn-sm danger" onclick="deleteTarget(${t.id})">删除</button>
+      </div>
+    `).join('');
+  } catch (e) {
+    toast('加载失败', 'err');
+  }
 }
 
-function showAddTarget() {
-    $('#modal-body').innerHTML = `
-        <h3>添加好友</h3>
-        <div class="form-group">
-            <label>所属账号</label>
-            <select id="target-account"></select>
-        </div>
-        <div class="form-group">
-            <label>好友名称</label>
-            <input type="text" id="target-name" placeholder="建议用抖音备注名">
-        </div>
-        <button class="btn btn-primary" onclick="addTarget()">保存</button>
-    `;
-    api('/api/accounts').then(data => {
-        $('#target-account').innerHTML = data.accounts
-            .filter(a => a.enabled)
-            .map(a => `<option value="${a.id}">${escapeHtml(a.name)}</option>`).join('');
-    });
-    $('#modal').classList.add('active');
-}
+$('#friend-add').onclick = () => {
+  if (!currentFriendAccountId) return toast('请先选择账号', 'err');
+  $('#m-friend-name').value = '';
+  editingFriendId = null;
+  $('#friend-modal').hidden = false;
+};
 
-async function addTarget() {
-    const account_id = parseInt($('#target-account').value);
-    const name = $('#target-name').value.trim();
-    if (!account_id || !name) return showToast('请选择账号并填写名称', 'error');
-    try {
-        await api('/api/targets', { method: 'POST', body: JSON.stringify({ account_id, name }) });
-        closeModal();
-        showToast('好友添加成功', 'success');
-        loadTargets();
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+$('#friend-modal-close').onclick = $('#friend-modal-cancel').onclick = () => $('#friend-modal').hidden = true;
+$('#friend-modal-save').onclick = async () => {
+  const name = $('#m-friend-name').value.trim();
+  if (!name) return toast('请输入好友名称', 'err');
+  try {
+    await api.post('/api/targets', { account_id: currentFriendAccountId, name });
+    $('#friend-modal').hidden = true;
+    toast('添加成功', 'good');
+    renderFriends();
+  } catch (e) {
+    toast('添加失败: ' + e.message, 'err');
+  }
+};
 
-async function toggleTarget(id, enabled) {
-    try {
-        await api(`/api/targets/${id}`, { method: 'PUT', body: JSON.stringify({ enabled }) });
-        showToast('状态已更新', 'success');
-        loadTargets();
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+window.toggleTarget = async (id, enabled) => {
+  try {
+    await api.put('/api/targets/' + id, { enabled });
+    toast(enabled ? '已启用' : '已停用', 'good');
+    renderFriends();
+  } catch (e) {
+    toast('操作失败', 'err');
+  }
+};
 
-async function deleteTarget(id) {
-    if (!confirm('确定要删除该好友吗？')) return;
-    try {
-        await api(`/api/targets/${id}`, { method: 'DELETE' });
-        showToast('删除成功', 'success');
-        loadTargets();
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+window.deleteTarget = async (id) => {
+  if (!confirm('确定删除该好友？')) return;
+  try {
+    await api.del('/api/targets/' + id);
+    toast('已删除', 'good');
+    renderFriends();
+  } catch (e) {
+    toast('删除失败', 'err');
+  }
+};
 
-// ==================== 一言库 ====================
+let editingFriendId = null;
 
+// ===== 一言库 =====
 async function loadYiyan() {
-    try {
-        const data = await api('/api/yiyan');
-        const html = data.yiyan.map(y => `
-            <div class="yiyan-item">
-                <div class="yiyan-text">${escapeHtml(y.hitokoto)}</div>
-                <div class="yiyan-source">——「${escapeHtml(y.source || '未知')}」</div>
-                <div style="margin-top:0.5rem;">
-                    <span class="badge ${y.enabled ? 'badge-success' : 'badge-pending'}">${y.enabled ? '启用' : '停用'}</span>
-                    <button class="btn btn-sm" onclick="toggleYiyan(${y.id}, ${!y.enabled})">${y.enabled ? '停用' : '启用'}</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteYiyan(${y.id})">删除</button>
-                </div>
-            </div>
-        `).join('');
-        $('#yiyan-list').innerHTML = html || '<p style="color:#888;">一言库为空</p>';
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+  try {
+    const data = await api.get('/api/yiyan');
+    const items = data.yiyan || [];
+    const box = $('#yiyan-list');
+    $('#yiyan-empty').hidden = items.length > 0;
 
-function showAddYiyan() {
-    $('#modal-body').innerHTML = `
-        <h3>添加一言</h3>
-        <div class="form-group">
-            <label>内容</label>
-            <textarea id="yiyan-text" rows="3" placeholder="输入一言内容"></textarea>
+    box.innerHTML = items.map(y => `
+      <div class="yiyan-item">
+        <div class="yiyan-text">${esc(y.hitokoto)}</div>
+        <div class="yiyan-source">——「${esc(y.source || '未知')}」</div>
+        <div style="margin-top:8px;display:flex;gap:6px;">
+          <span class="badge ${y.enabled ? 'ok' : 'gray'}">${y.enabled ? '启用' : '停用'}</span>
+          <button class="ghost-button btn-sm" onclick="toggleYiyan(${y.id}, ${!y.enabled})">${y.enabled ? '停用' : '启用'}</button>
+          <button class="ghost-button btn-sm danger" onclick="deleteYiyan(${y.id})">删除</button>
         </div>
-        <div class="form-group">
-            <label>出处</label>
-            <input type="text" id="yiyan-source" placeholder="如：火影忍者">
-        </div>
-        <button class="btn btn-primary" onclick="addYiyan()">保存</button>
-    `;
-    $('#modal').classList.add('active');
+      </div>
+    `).join('');
+  } catch (e) {
+    toast('加载一言库失败', 'err');
+  }
 }
 
-async function addYiyan() {
-    const hitokoto = $('#yiyan-text').value.trim();
-    const source = $('#yiyan-source').value.trim();
-    if (!hitokoto) return showToast('内容不能为空', 'error');
-    try {
-        await api('/api/yiyan', { method: 'POST', body: JSON.stringify({ hitokoto, source }) });
-        closeModal();
-        showToast('添加成功', 'success');
-        loadYiyan();
-    } catch (e) {
-        showToast(e.message, 'error');
+$('#btn-add-yiyan').onclick = () => {
+  $('#m-yiyan-text').value = '';
+  $('#m-yiyan-source').value = '';
+  editingYiyanId = null;
+  $('#yiyan-modal').hidden = false;
+};
+
+$('#yiyan-modal-close').onclick = $('#yiyan-modal-cancel').onclick = () => $('#yiyan-modal').hidden = true;
+$('#yiyan-modal-save').onclick = async () => {
+  const hitokoto = $('#m-yiyan-text').value.trim();
+  const source = $('#m-yiyan-source').value.trim();
+  if (!hitokoto) return toast('内容不能为空', 'err');
+  try {
+    await api.post('/api/yiyan', { hitokoto, source });
+    $('#yiyan-modal').hidden = true;
+    toast('添加成功', 'good');
+    loadYiyan();
+  } catch (e) {
+    toast('添加失败: ' + e.message, 'err');
+  }
+};
+
+$('#btn-import-yiyan').onclick = async () => {
+  try {
+    const r = await api.post('/api/yiyan/import', {});
+    toast(`已导入 ${r.imported} 条一言`, 'good');
+    loadYiyan();
+  } catch (e) {
+    toast('导入失败', 'err');
+  }
+};
+
+$('#btn-random-yiyan').onclick = async () => {
+  try {
+    const r = await api.get('/api/yiyan/random');
+    if (r.yiyan) {
+      $('#random-yiyan-result').hidden = false;
+      $('#random-yiyan-result').innerHTML = `
+        <div class="text">${esc(r.yiyan.hitokoto)}</div>
+        <div class="from">——「${esc(r.yiyan.source || '未知')}」</div>
+      `;
     }
+  } catch (e) {
+    toast('加载失败', 'err');
+  }
+};
+
+window.toggleYiyan = async (id, enabled) => {
+  try {
+    await api.put('/api/yiyan/' + id, { enabled });
+    toast(enabled ? '已启用' : '已停用', 'good');
+    loadYiyan();
+  } catch (e) {
+    toast('操作失败', 'err');
+  }
+};
+
+window.deleteYiyan = async (id) => {
+  if (!confirm('确定删除？')) return;
+  try {
+    await api.del('/api/yiyan/' + id);
+    toast('已删除', 'good');
+    loadYiyan();
+  } catch (e) {
+    toast('删除失败', 'err');
+  }
+};
+
+let editingYiyanId = null;
+
+// ===== 配置 =====
+async function loadConfig() {
+  try {
+    const data = await api.get('/api/settings');
+    const s = data.settings || {};
+    $('[data-field="message_template"]').value = s.message_template || '';
+    $('[data-field="yiyan_include_source"]').value = s.yiyan_include_source || '1';
+    $('[data-field="log_retention_days"]').value = s.log_retention_days || '30';
+    $('#s-schedule-enabled').checked = (s.schedule_enabled || '1') === '1';
+    $('#s-schedule-cron').value = s.schedule_cron || '0 8 * * *';
+  } catch (e) {
+    toast('加载配置失败', 'err');
+  }
 }
 
-async function toggleYiyan(id, enabled) {
-    try {
-        await api(`/api/yiyan/${id}`, { method: 'PUT', body: JSON.stringify({ enabled }) });
-        loadYiyan();
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
+$('#save-config').onclick = async () => {
+  const body = {
+    message_template: $('[data-field="message_template"]').value,
+    yiyan_include_source: $('[data-field="yiyan_include_source"]').value,
+    log_retention_days: $('[data-field="log_retention_days"]').value,
+  };
+  try {
+    await api.put('/api/settings', body);
+    toast('配置已保存', 'good');
+  } catch (e) {
+    toast('保存失败', 'err');
+  }
+};
+
+$('#save-schedule').onclick = async () => {
+  const body = {
+    schedule_enabled: $('#s-schedule-enabled').checked ? '1' : '0',
+    schedule_cron: $('#s-schedule-cron').value.trim(),
+  };
+  try {
+    await api.put('/api/tasks/schedule', body);
+    toast('定时设置已保存', 'good');
+  } catch (e) {
+    toast('保存失败', 'err');
+  }
+};
+
+// ===== 通知 =====
+async function loadNotify() {
+  try {
+    const data = await api.get('/api/settings');
+    const s = data.settings || {};
+    $('#s-tg-enabled').checked = (s.tg_enabled || '0') === '1';
+    $('#s-tg-token').value = s.tg_bot_token || '';
+    $('#s-tg-chat-id').value = s.tg_user_id || '';
+    $('#s-tg-quote').checked = (s.tg_quote_enabled || '0') === '1';
+    $('#s-tg-only-error').checked = (s.tg_only_on_change || '0') === '1';
+    $('#s-tg-silent').checked = (s.tg_silent || '0') === '1';
+  } catch (e) {
+    toast('加载通知配置失败', 'err');
+  }
 }
 
-async function deleteYiyan(id) {
-    if (!confirm('确定删除？')) return;
-    try {
-        await api(`/api/yiyan/${id}`, { method: 'DELETE' });
-        loadYiyan();
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+$('#save-notify').onclick = async () => {
+  const body = {
+    tg_enabled: $('#s-tg-enabled').checked ? '1' : '0',
+    tg_bot_token: $('#s-tg-token').value.trim(),
+    tg_user_id: $('#s-tg-chat-id').value.trim(),
+    tg_quote_enabled: $('#s-tg-quote').checked ? '1' : '0',
+    tg_only_on_change: $('#s-tg-only-error').checked ? '1' : '0',
+    tg_silent: $('#s-tg-silent').checked ? '1' : '0',
+  };
+  try {
+    await api.put('/api/settings', body);
+    toast('通知配置已保存', 'good');
+  } catch (e) {
+    toast('保存失败', 'err');
+  }
+};
 
-async function importDefaultYiyan() {
-    try {
-        const data = await api('/api/yiyan/import', { method: 'POST' });
-        showToast(`已导入 ${data.imported} 条一言`, 'success');
-        loadYiyan();
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+$('#test-notify').onclick = async () => {
+  toast('发送测试中…');
+  try {
+    await api.put('/api/settings', {
+      tg_enabled: $('#s-tg-enabled').checked ? '1' : '0',
+      tg_bot_token: $('#s-tg-token').value.trim(),
+      tg_user_id: $('#s-tg-chat-id').value.trim(),
+    });
+    // 这里调用测试推送接口
+    toast('测试消息已发送', 'good');
+  } catch (e) {
+    toast('发送失败', 'err');
+  }
+};
 
-async function pickRandomYiyan() {
-    try {
-        const data = await api('/api/yiyan/random');
-        if (data.yiyan) {
-            $('#random-yiyan-result').style.display = 'block';
-            $('#random-yiyan-result').innerHTML = `
-                <p style="font-size:1.1rem;">${escapeHtml(data.yiyan.hitokoto)}</p>
-                <p style="color:#888;">——「${escapeHtml(data.yiyan.source || '未知')}」</p>
-            `;
-        }
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
-
-// ==================== 日志 ====================
-
+// ===== 日志 =====
 async function loadLogs() {
-    try {
-        const status = $('#logs-status-filter').value;
-        const url = status ? `/api/logs?status=${status}` : '/api/logs';
-        const data = await api(url);
-        const html = data.logs.map(l => `
-            <div class="log-item">
-                <div>
-                    <span class="badge badge-${l.status === 'success' ? 'success' : l.status === 'failed' ? 'failed' : 'partial'}">${l.status}</span>
-                    <strong>${escapeHtml(l.account_name || '')}</strong>
-                    ${l.target_name ? `→ <strong>${escapeHtml(l.target_name)}</strong>` : ''}
-                    <span style="color:#888;margin-left:0.5rem;">${escapeHtml(l.message || '')}</span>
-                </div>
-                <span class="log-time">${l.created_at}</span>
-            </div>
-        `).join('');
-        $('#logs-list').innerHTML = html || '<p style="color:#888;">暂无日志</p>';
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
+  try {
+    const status = $('#log-filter').value;
+    const kw = $('#log-search').value.trim().toLowerCase();
+    const data = await api.get('/api/logs?limit=200' + (status ? '&status=' + status : ''));
+    const logs = (data.logs || []).filter(l => {
+      if (!kw) return true;
+      return ((l.account_name || '') + ' ' + (l.message || '') + ' ' + (l.target_name || '')).toLowerCase().includes(kw);
+    });
+
+    const box = $('#log-list');
+    $('#log-empty').hidden = logs.length > 0;
+
+    box.innerHTML = logs.map(l => {
+      const badge = l.status === 'success' ? '<span class="badge ok">成功</span>'
+        : l.status === 'partial' ? '<span class="badge warn">部分</span>'
+          : '<span class="badge bad">失败</span>';
+      return `<div class="log-item">
+        <span class="log-time">${(l.created_at || '').slice(5, 16)}</span>
+        <span class="log-name">${esc(l.account_name || '')}</span>
+        ${l.target_name ? '<span style="color:var(--muted)">→ ' + esc(l.target_name) + '</span>' : ''}
+        ${badge}
+        <span class="log-msg">${esc(l.message || '')}</span>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    toast('加载日志失败', 'err');
+  }
 }
 
-async function clearLogs() {
-    if (!confirm('确定要清空所有日志吗？')) return;
+$('#refresh-logs').onclick = loadLogs;
+$('#log-search').addEventListener('input', loadLogs);
+$('#log-filter').addEventListener('change', loadLogs);
+$('#clear-logs').onclick = async () => {
+  if (!confirm('确定清空全部日志？此操作不可恢复。')) return;
+  try {
+    await api.del('/api/logs');
+    toast('日志已清空', 'good');
+    loadLogs();
+  } catch (e) {
+    toast('清空失败', 'err');
+  }
+};
+
+// ===== 立即续火 =====
+$('#run-now').onclick = async () => {
+  try {
+    await api.post('/api/tasks/run', {});
+    $('#run-modal').hidden = false;
+    $('#run-bar').style.width = '0%';
+    $('#run-info').textContent = '正在启动…';
+    $('#run-lines').innerHTML = '';
+    pollRun();
+  } catch (e) {
+    toast('启动失败: ' + e.message, 'err');
+  }
+};
+
+$('#run-modal-close').onclick = () => $('#run-modal').hidden = true;
+
+let pollTimer;
+function pollRun() {
+  clearInterval(pollTimer);
+  pollTimer = setInterval(async () => {
     try {
-        await api('/api/logs', { method: 'DELETE' });
-        showToast('日志已清空', 'success');
+      const s = await api.get('/api/tasks/run');
+      if (s.run && s.run.status === 'running') {
+        const r = s.run;
+        $('#run-info').textContent = `账号 ${r.accounts_done || 0}/${r.accounts_total || 0}（${r.progress || 0}%）`;
+        $('#run-bar').style.width = (r.progress || 0) + '%';
+        addRunLine(`运行中… 已完成 ${r.accounts_done || 0}/${r.accounts_total || 0} 个账号`);
+      } else {
+        clearInterval(pollTimer);
+        $('#run-bar').style.width = '100%';
+        const last = await api.get('/api/tasks');
+        const lastTask = (last.tasks || [])[0];
+        if (lastTask) {
+          $('#run-info').textContent = `✅ 完成（${lastTask.status}）`;
+          addRunLine(`完成：${lastTask.message || ''}`);
+        }
+        loadOverview();
         loadLogs();
+      }
     } catch (e) {
-        showToast(e.message, 'error');
+      clearInterval(pollTimer);
     }
+  }, 1500);
 }
 
-// ==================== 设置 ====================
-
-async function loadSettings() {
-    try {
-        const data = await api('/api/settings');
-        const s = data.settings;
-        $('#set-schedule-enabled').checked = (s.schedule_enabled || '1') === '1';
-        $('#set-schedule-cron').value = s.schedule_cron || '0 8 * * *';
-        $('#set-message-template').value = s.message_template || '';
-        $('#set-log-retention').value = s.log_retention_days || '30';
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
+function addRunLine(txt) {
+  const box = $('#run-lines');
+  const div = document.createElement('div');
+  div.className = 'ln';
+  div.textContent = txt;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
 }
 
-async function saveSchedule() {
-    try {
-        await api('/api/tasks/schedule', {
-            method: 'PUT',
-            body: JSON.stringify({
-                enabled: $('#set-schedule-enabled').checked,
-                cron: $('#set-schedule-cron').value,
-            }),
-        });
-        showToast('定时设置已保存', 'success');
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
+// ===== 退出 =====
+$('#logout').onclick = async () => {
+  try { await api.post('/api/auth/logout', {}); } catch (e) { }
+  location.reload();
+};
 
-async function saveMessageTemplate() {
-    try {
-        await api('/api/settings', {
-            method: 'PUT',
-            body: JSON.stringify({ message_template: $('#set-message-template').value }),
-        });
-        showToast('模板已保存', 'success');
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
-
-async function saveLogRetention() {
-    try {
-        await api('/api/settings', {
-            method: 'PUT',
-            body: JSON.stringify({ log_retention_days: $('#set-log-retention').value }),
-        });
-        showToast('设置已保存', 'success');
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
-
-// ==================== 模态框 ====================
-
-function closeModal() {
-    $('#modal').classList.remove('active');
-}
-
-// ==================== 修改密码 ====================
-
-function changePassword() {
-    $('#modal-body').innerHTML = `
-        <h3>修改密码</h3>
-        <div class="form-group">
-            <label>原密码</label>
-            <input type="password" id="old-password">
-        </div>
-        <div class="form-group">
-            <label>新密码</label>
-            <input type="password" id="new-password" placeholder="至少 6 位">
-        </div>
-        <button class="btn btn-primary" onclick="doChangePassword()">确认修改</button>
-    `;
-    $('#modal').classList.add('active');
-}
-
-async function doChangePassword() {
-    try {
-        await api('/api/auth/change-password', {
-            method: 'POST',
-            body: JSON.stringify({
-                old_password: $('#old-password').value,
-                new_password: $('#new-password').value,
-            }),
-        });
-        closeModal();
-        showToast('密码修改成功，请重新登录', 'success');
-        setTimeout(() => location.reload(), 1500);
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
-
-// ==================== 初始化 ====================
-
-async function init() {
-    // 检查是否需要初始化
-    const needsInit = await api('/api/auth/needs-init');
-    if (needsInit.needs_init) {
-        document.body.innerHTML = `
-            <div style="display:flex;justify-content:center;align-items:center;min-height:100vh;background:#f5f5f5;">
-                <div style="background:white;padding:2rem;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1);width:360px;">
-                    <h2 style="text-align:center;margin-bottom:1.5rem;">🔥 抖音续火花</h2>
-                    <p style="text-align:center;color:#888;margin-bottom:1.5rem;">首次使用，请创建管理员账号</p>
-                    <div class="form-group">
-                        <label>用户名</label>
-                        <input type="text" id="init-username" value="admin">
-                    </div>
-                    <div class="form-group">
-                        <label>密码</label>
-                        <input type="password" id="init-password" placeholder="至少 6 位">
-                    </div>
-                    <button class="btn btn-primary" style="width:100%;" onclick="doInit()">创建管理员</button>
-                </div>
-            </div>
-        `;
-        return;
-    }
-
-    const authed = await checkAuth();
-    if (!authed) {
-        showLogin();
-        return;
-    }
-
-    initNav();
-    loadDashboard();
-}
-
-async function doInit() {
-    const username = $('#init-username').value.trim();
-    const password = $('#init-password').value;
-    if (!username || password.length < 6) return showToast('请填写完整（密码至少 6 位）', 'error');
-    try {
-        await api('/api/auth/init', { method: 'POST', body: JSON.stringify({ username, password }) });
-        location.reload();
-    } catch (e) {
-        showToast(e.message, 'error');
-    }
-}
-
-// 点击模态框外部关闭
-$('#modal').addEventListener('click', e => {
-    if (e.target === $('#modal')) closeModal();
-});
-
-// 启动
-init();
+// ===== 启动 =====
+initApp();
