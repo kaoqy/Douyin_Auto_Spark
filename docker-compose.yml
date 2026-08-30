@@ -1,0 +1,36 @@
+# ============================================================
+# 抖音自动续火花管理面板 · Docker Compose 部署
+# ============================================================
+name: douyin-auto-spark
+
+services:
+  das:
+    image: ${DAS_IMAGE:-douyin-auto-spark:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: douyin-auto-spark
+    restart: unless-stopped
+    ports:
+      - "${DAS_PORT:-8000}:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - APP_HOST=0.0.0.0
+      - APP_PORT=8000
+      - DAS_ADMIN_USER=${DAS_ADMIN_USER:-admin}
+      - DAS_ADMIN_PASSWORD=${DAS_ADMIN_PASSWORD:-}
+      - PLAYWRIGHT_HEADLESS=1
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys,os; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ['APP_PORT']+'/api/health', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,13 @@
+# 抖音自动续火花管理面板 - 依赖
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+apscheduler>=3.10.0
+playwright>=1.48.0
+pydantic>=2.0.0
+python-multipart>=0.0.9
+itsdangerous>=2.2.0
+jinja2>=3.1.0
+
+# 测试依赖
+pytest>=8.0.0
+httpx2>=0.28.0

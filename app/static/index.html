@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>抖音续火花管理面板</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 顶部导航 -->
+        <header class="header">
+            <div class="header-left">
+                <h1>🔥 抖音续火花</h1>
+            </div>
+            <div class="header-right">
+                <span id="user-info"></span>
+                <button class="btn btn-sm" onclick="changePassword()">修改密码</button>
+                <button class="btn btn-sm btn-danger" onclick="logout()">退出</button>
+            </div>
+        </header>
+
+        <div class="container">
+            <!-- 侧边栏 -->
+            <nav class="sidebar">
+                <a href="#" class="nav-item active" data-page="dashboard">📊 仪表盘</a>
+                <a href="#" class="nav-item" data-page="accounts">👤 账号管理</a>
+                <a href="#" class="nav-item" data-page="targets">💬 好友管理</a>
+                <a href="#" class="nav-item" data-page="yiyan">📝 一言库</a>
+                <a href="#" class="nav-item" data-page="logs">📋 日志</a>
+                <a href="#" class="nav-item" data-page="settings">⚙️ 设置</a>
+            </nav>
+
+            <!-- 主内容区 -->
+            <main class="main">
+                <!-- 仪表盘 -->
+                <section id="page-dashboard" class="page active">
+                    <h2>仪表盘</h2>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-accounts">0</div>
+                            <div class="stat-label">账号数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-targets">0</div>
+                            <div class="stat-label">好友数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-success">0</div>
+                            <div class="stat-label">今日成功</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-fail">0</div>
+                            <div class="stat-label">今日失败</div>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <h3>下次续火</h3>
+                        <p id="next-run">加载中...</p>
+                    </div>
+                    <div class="card">
+                        <h3>最近任务</h3>
+                        <div id="recent-tasks">加载中...</div>
+                    </div>
+                </section>
+
+                <!-- 账号管理 -->
+                <section id="page-accounts" class="page">
+                    <h2>账号管理</h2>
+                    <button class="btn btn-primary" onclick="showAddAccount()">+ 添加账号</button>
+                    <div id="accounts-list"></div>
+                </section>
+
+                <!-- 好友管理 -->
+                <section id="page-targets" class="page">
+                    <h2>好友管理</h2>
+                    <div class="toolbar">
+                        <select id="targets-account-filter" onchange="loadTargets()"></select>
+                        <button class="btn btn-primary" onclick="showAddTarget()">+ 添加好友</button>
+                    </div>
+                    <div id="targets-list"></div>
+                </section>
+
+                <!-- 一言库 -->
+                <section id="page-yiyan" class="page">
+                    <h2>一言库</h2>
+                    <div class="toolbar">
+                        <button class="btn btn-primary" onclick="showAddYiyan()">+ 添加一言</button>
+                        <button class="btn" onclick="importDefaultYiyan()">导入默认</button>
+                        <button class="btn" onclick="pickRandomYiyan()">🎲 随机一条</button>
+                    </div>
+                    <div id="random-yiyan-result" class="card" style="display:none;"></div>
+                    <div id="yiyan-list"></div>
+                </section>
+
+                <!-- 日志 -->
+                <section id="page-logs" class="page">
+                    <h2>日志</h2>
+                    <div class="toolbar">
+                        <select id="logs-status-filter" onchange="loadLogs()">
+                            <option value="">全部状态</option>
+                            <option value="success">成功</option>
+                            <option value="failed">失败</option>
+                            <option value="partial">部分成功</option>
+                        </select>
+                        <button class="btn btn-danger" onclick="clearLogs()">清空日志</button>
+                    </div>
+                    <div id="logs-list"></div>
+                </section>
+
+                <!-- 设置 -->
+                <section id="page-settings" class="page">
+                    <h2>设置</h2>
+                    <div class="card">
+                        <h3>定时任务</h3>
+                        <div class="form-group">
+                            <label>启用定时</label>
+                            <input type="checkbox" id="set-schedule-enabled">
+                        </div>
+                        <div class="form-group">
+                            <label>Cron 表达式</label>
+                            <input type="text" id="set-schedule-cron" placeholder="0 8 * * *">
+                            <small>格式：分 时 日 月 周（默认每天 8:00）</small>
+                        </div>
+                        <button class="btn btn-primary" onclick="saveSchedule()">保存定时设置</button>
+                    </div>
+                    <div class="card">
+                        <h3>消息模板</h3>
+                        <div class="form-group">
+                            <label>自定义模板</label>
+                            <textarea id="set-message-template" rows="4" placeholder="{{friend}}，今天的火花到账啦🔥\n{{yiyan}}\n——「{{from}}」\n{{date}} {{weekday}}"></textarea>
+                            <small>占位符：{{account}} {{friend}} {{yiyan}} {{from}} {{date}} {{time}} {{weekday}}</small>
+                        </div>
+                        <button class="btn btn-primary" onclick="saveMessageTemplate()">保存模板</button>
+                    </div>
+                    <div class="card">
+                        <h3>日志保留</h3>
+                        <div class="form-group">
+                            <label>保留天数</label>
+                            <input type="number" id="set-log-retention" value="30" min="1">
+                        </div>
+                        <button class="btn btn-primary" onclick="saveLogRetention()">保存</button>
+                    </div>
+                </section>
+            </main>
+        </div>
+    </div>
+
+    <!-- 模态框 -->
+    <div id="modal" class="modal">
+        <div class="modal-content">
+            <span class="modal-close" onclick="closeModal()">&times;</span>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- 提示框 -->
+    <div id="toast" class="toast"></div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
