@@ -14,8 +14,7 @@ services:
       - TZ=Asia/Shanghai
       - APP_HOST=0.0.0.0
       - APP_PORT=8000
-      - DAS_ADMIN_USER=${DAS_ADMIN_USER:-admin}
-      - DAS_ADMIN_PASSWORD=${DAS_ADMIN_PASSWORD:-}
+
       - PLAYWRIGHT_HEADLESS=1
     volumes:
       - ./data:/app/data

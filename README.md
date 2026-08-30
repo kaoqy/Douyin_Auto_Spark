@@ -22,12 +22,10 @@
 # 拉取镜像
 docker pull kaoqy666/douyin-auto-spark:latest
 
-# 启动（替换为你的管理员密码）
+# 启动
 docker run -d \
   --name douyin-auto-spark \
   -p 8001:8000 \
-  -e DAS_ADMIN_USER=admin \
-  -e DAS_ADMIN_PASSWORD=your_secure_password \
   -v douyin_data:/app/data \
   --restart unless-stopped \
   kaoqy666/douyin-auto-spark:latest
@@ -65,8 +63,6 @@ services:
       - "8001:8000"
     environment:
       - TZ=Asia/Shanghai
-      - DAS_ADMIN_USER=admin
-      - DAS_ADMIN_PASSWORD=your_secure_password
     volumes:
       - ./data:/app/data
 ```
@@ -110,18 +106,6 @@ python run.py --host 0.0.0.0 --port 8001
 ### 设置定时
 
 在设置页面配置 Cron 表达式，如 `0 8 * * *`（每天 8 点）。
-
-### 环境变量
-
-| 变量 | 默认值 | 说明 |
-|---|---|---|
-| `DAS_ADMIN_USER` | `admin` | 管理员用户名 |
-| `DAS_ADMIN_PASSWORD` | `admin123` | 管理员密码 |
-| `APP_HOST` | `0.0.0.0` | 监听地址 |
-| `APP_PORT` | `8000` | 监听端口（容器内） |
-| `DAS_DATA_DIR` | `./data` | 数据目录 |
-| `PLAYWRIGHT_HEADLESS` | `1` | 无头模式 |
-| `TZ` | `Asia/Shanghai` | 时区 |
 
 ## 项目结构
 

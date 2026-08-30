@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
+
 import secrets
 from datetime import datetime, timedelta
 from typing import Any
@@ -59,13 +59,7 @@ def auth_enabled() -> bool:
     return database.count_users() > 0
 
 
-def ensure_default_admin() -> None:
-    """首次部署时创建默认管理员"""
-    if database.count_users() == 0:
-        admin_user = os.environ.get("DAS_ADMIN_USER", "admin")
-        admin_pass = os.environ.get("DAS_ADMIN_PASSWORD", "admin123")
-        database.create_user(admin_user, hash_password(admin_pass))
-        log.warning("已创建默认管理员：%s / %s（请尽快修改密码）", admin_user, admin_pass)
+
 
 
 def change_password(user_id: int, new_password: str) -> bool:
