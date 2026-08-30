@@ -17,7 +17,6 @@ services:
       - TZ=Asia/Shanghai
       - APP_HOST=0.0.0.0
       - APP_PORT=8000
-
       - PLAYWRIGHT_HEADLESS=1
     volumes:
       - ./data:/app/data

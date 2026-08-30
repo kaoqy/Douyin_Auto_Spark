@@ -37,9 +37,24 @@ def create_account(body: dict[str, Any]):
     # 验证 Cookie 格式
     try:
         import json
-        data = json.loads(cookie) if isinstance(cookie, str) else cookie
-        if not isinstance(data, list) or len(data) == 0:
+        if isinstance(cookie, str):
+            data = json.loads(cookie)
+        elif isinstance(cookie, list):
+            data = cookie
+        else:
+            raise ValueError("Cookie 必须是 JSON 数组字符串或列表")
+        if not isinstance(data, list):
             raise ValueError("Cookie 必须是非空 JSON 数组")
+        if len(data) == 0:
+            raise ValueError("Cookie 数组不能为空")
+        # 验证每个元素都有 name 和 value
+        for item in data:
+            if not isinstance(item, dict) or "name" not in item or "value" not in item:
+                raise ValueError("Cookie 数组每个元素必须包含 name 和 value 字段")
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Cookie JSON 解析失败：{e}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Cookie 格式错误：{e}")
 

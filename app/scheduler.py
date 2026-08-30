@@ -10,6 +10,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from . import database
+from .anti_ban import AntiBanPolicy
 from .douyin_runner import run_account_spark_sync, AccountResult
 
 log = logging.getLogger("das.scheduler")
@@ -70,10 +71,20 @@ def run_spark_task(trigger_type: str = "manual", account_ids: list[int] | None =
             })
             return summary
 
+        # 加载防封策略
+        policy = AntiBanPolicy.from_settings()
+        log.info(policy.describe())
+
         overall = []
         total = success = fail = 0
 
-        for acc in accounts:
+        for idx, acc in enumerate(accounts, start=1):
+            # 防封等待
+            if idx > 1 or policy.should_wait():
+                wait = policy.wait_between_accounts(idx, len(accounts))
+                if wait:
+                    _current_run["message"] = f"防封等待 {wait:.0f}s 后处理账号 {acc['name']}"
+
             result = run_account_spark_sync(acc, task_id)
 
             # 更新账号状态

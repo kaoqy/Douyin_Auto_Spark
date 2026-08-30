@@ -18,6 +18,10 @@ log = logging.getLogger("das.database")
 _local = threading.local()
 
 
+def _now() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
 def get_conn() -> sqlite3.Connection:
     """获取当前线程的数据库连接"""
     conn = getattr(_local, "conn", None)
@@ -63,8 +67,8 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS accounts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
-            cookie TEXT NOT NULL,          -- Cookie JSON 字符串（完整原始值）
-            proxy TEXT DEFAULT '',         -- SOCKS5 代理 URL（可空）
+            cookie TEXT NOT NULL,
+            proxy TEXT DEFAULT '',
             enabled INTEGER DEFAULT 1,
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             last_run TEXT,
@@ -76,7 +80,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS targets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-            name TEXT NOT NULL,            -- 好友名称/备注名
+            name TEXT NOT NULL,
             enabled INTEGER DEFAULT 1,
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             last_run TEXT,
@@ -123,13 +127,67 @@ def init_db() -> None:
             created_at TEXT DEFAULT (datetime('now', 'localtime'))
         );
 
+        -- SOCKS5 代理节点表
+        CREATE TABLE IF NOT EXISTS proxies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT DEFAULT '',
+            ip TEXT DEFAULT '',
+            port INTEGER DEFAULT 0,
+            username TEXT DEFAULT '',
+            password TEXT DEFAULT '',
+            url TEXT DEFAULT '',
+            geo_country TEXT DEFAULT '',
+            geo_region TEXT DEFAULT '',
+            geo_country_code TEXT DEFAULT '',
+            geo_ip TEXT DEFAULT '',
+            enabled INTEGER DEFAULT 1,
+            remark TEXT DEFAULT '',
+            last_test TEXT DEFAULT '',
+            last_latency_ms INTEGER DEFAULT 0,
+            last_test_at TEXT DEFAULT '',
+            last_test_message TEXT DEFAULT '',
+            created_at TEXT DEFAULT (datetime('now', 'localtime')),
+            updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+        );
+
         -- 创建索引
         CREATE INDEX IF NOT EXISTS idx_targets_account ON targets(account_id);
         CREATE INDEX IF NOT EXISTS idx_logs_task ON logs(task_id);
         CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(created_at);
     """)
     conn.commit()
-    log.info("数据库已初始化：%s", DB_PATH)
+    _seed_defaults(conn)
+
+
+def _seed_defaults(conn: sqlite3.Connection) -> None:
+    """写入默认设置"""
+    defaults = {
+        "tg_enabled": "0",
+        "tg_bot_token": "",
+        "tg_user_id": "",
+        "tg_quote_enabled": "1",
+        "tg_only_on_change": "0",
+        "tg_silent": "0",
+        "schedule_enabled": "1",
+        "schedule_cron": "0 8 * * *",
+        "anti_ban_enabled": "1",
+        "anti_ban_wait_min": "120",
+        "anti_ban_wait_max": "300",
+        "anti_ban_window_hour": "7",
+        "proxy_force": "0",
+        "proxy_fallback": "1",
+        "spark_delay_min": "3",
+        "spark_delay_max": "8",
+        "log_retention_days": "30",
+        "message_template": "",
+        "yiyan_include_source": "1",
+    }
+    for k, v in defaults.items():
+        conn.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            (k, v),
+        )
+    conn.commit()
 
 
 # ==================== 用户与认证 ====================
@@ -490,6 +548,86 @@ def import_yiyan_batch(entries: list[dict]) -> int:
         count += 1
     conn.commit()
     return count
+
+
+# ==================== SOCKS5 代理管理 ====================
+
+def add_proxy(data: dict) -> int:
+    conn = get_conn()
+    cur = conn.execute(
+        """INSERT INTO proxies (label, ip, port, username, password, url, geo_country, geo_region, geo_country_code, geo_ip, enabled, remark)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            data.get("label", ""),
+            data.get("ip", ""),
+            data.get("port", 0),
+            data.get("username", ""),
+            data.get("password", ""),
+            data.get("url", ""),
+            data.get("geo_country", ""),
+            data.get("geo_region", ""),
+            data.get("geo_country_code", ""),
+            data.get("geo_ip", ""),
+            1 if data.get("enabled", True) else 0,
+            data.get("remark", ""),
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_proxy(proxy_id: int, **kwargs: Any) -> bool:
+    conn = get_conn()
+    allowed = {"label", "ip", "port", "username", "password", "url", "geo_country", "geo_region", "geo_country_code", "geo_ip", "enabled", "remark", "last_test", "last_latency_ms", "last_test_at", "last_test_message"}
+    sets = []
+    vals = []
+    for k, v in kwargs.items():
+        if k not in allowed:
+            continue
+        sets.append(f"{k} = ?")
+        vals.append(v)
+    if not sets:
+        return False
+    sets.append("updated_at = datetime('now', 'localtime')")
+    vals.append(proxy_id)
+    conn.execute(f"UPDATE proxies SET {', '.join(sets)} WHERE id = ?", vals)
+    conn.commit()
+    return True
+
+
+def delete_proxy(proxy_id: int) -> bool:
+    conn = get_conn()
+    cur = conn.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def get_proxies(include_disabled: bool = False) -> list[dict]:
+    conn = get_conn()
+    if include_disabled:
+        rows = conn.execute("SELECT * FROM proxies ORDER BY id").fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM proxies WHERE enabled = 1 ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_proxy(proxy_id: int) -> dict | None:
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM proxies WHERE id = ?", (proxy_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def build_proxy_url(data: dict) -> str:
+    """根据字段构建 socks5:// 链接"""
+    ip = data.get("ip", "")
+    port = data.get("port", 0)
+    user = data.get("username", "")
+    pwd = data.get("password", "")
+    if not ip or not port:
+        return data.get("url", "")
+    if user:
+        return f"socks5://{user}:{pwd}@{ip}:{port}"
+    return f"socks5://{ip}:{port}"
 
 
 # ==================== 代理脱敏 ====================

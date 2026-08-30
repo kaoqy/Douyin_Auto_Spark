@@ -25,6 +25,9 @@
         <button class="nav-item" data-view="accounts">
           <span class="nav-ico">👥</span>账号管理
         </button>
+        <button class="nav-item" data-view="proxies">
+          <span class="nav-ico">🌐</span>代理
+        </button>
         <button class="nav-item" data-view="friends">
           <span class="nav-ico">💬</span>好友管理
         </button>
@@ -111,6 +114,22 @@
             <button class="btn btn-ghost btn-sm" id="btn-sel-clear">清空选择</button>
           </div>
           <div class="table-wrap"><table id="accTable"><thead><tr><th style="width:34px"><input type="checkbox" id="accCheckAll" title="全选" /></th><th>名称</th><th>状态</th><th>代理</th><th>上次续火</th><th>操作</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- 代理管理 -->
+      <section class="view" id="view-proxies" hidden>
+        <div class="card">
+          <div class="card-head">
+            <h2>SOCKS5 代理节点</h2>
+            <div class="account-actions">
+              <button class="btn btn-ghost btn-sm" id="btn-proxy-test-all">🧪 测试全部</button>
+              <button class="btn btn-primary btn-sm" id="btn-add-proxy">＋ 添加代理</button>
+            </div>
+          </div>
+          <p class="hint" style="margin:0 0 12px">不同归属地的代理节点会<span class="badge warn">并行</span>续火；相同节点依次续火。账号在「账号管理」里选择对应的代理。</p>
+          <div class="proxy-list" id="proxyList"></div>
+          <div style="color:var(--muted);font-size:12px;margin-top:8px" id="proxyListHint"></div>
         </div>
       </section>
 
@@ -206,10 +225,35 @@
             </div>
           </div>
           <div class="card">
-            <div class="card-head"><h2>日志保留</h2></div>
+            <div class="card-head"><h2>防封策略</h2></div>
             <div class="form">
-              <label>保留天数<input type="number" id="s-log_retention_days" min="0" value="30" /><small>0 = 不自动清理</small></label>
-              <div class="form-actions"><button class="btn btn-ghost" id="btn-save-retention">保存</button></div>
+              <label>启用防封等待<input type="checkbox" id="s-anti_ban_enabled" /></label>
+              <div class="row2">
+                <label>最小等待(s)<input type="number" id="s-anti_ban_wait_min" /></label>
+                <label>最大等待(s)<input type="number" id="s-anti_ban_wait_max" /></label>
+              </div>
+              <label>窗口(凌晨N点前)<input type="number" id="s-anti_ban_window_hour" /></label>
+              <small class="hint">账号之间随机等待，降低风控风险</small>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>代理策略</h2></div>
+            <div class="form">
+              <p class="hint" style="margin-bottom:12px">代理节点请到侧栏「<b>🌐 代理</b>」标签页添加/管理（支持手动输入或粘贴链接自动识别归属地），并到「账号管理」为每个账号指定代理。</p>
+              <div class="row2">
+                <label><input type="checkbox" id="s-proxy_force" /> 严格代理（失败不回退直连）</label>
+                <label><input type="checkbox" id="s-proxy_fallback" checked /> 失败回退直连</label>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>续火参数</h2></div>
+            <div class="form">
+              <div class="row2">
+                <label>好友最小延时(s)<input type="number" id="s-spark_delay_min" /></label>
+                <label>好友最大延时(s)<input type="number" id="s-spark_delay_max" /></label>
+              </div>
+              <label>日志保留天数<input type="number" id="s-log_retention_days" min="0" /><small>0 = 不自动清理</small></label>
             </div>
           </div>
           <div class="card">
@@ -246,7 +290,9 @@
         <div class="form">
           <label>账号名称<input id="m-name" placeholder="例如：小号1" /></label>
           <label>Cookie JSON（从 Cookie-Editor 导出）<textarea id="m-cookie" rows="6" placeholder='[{"name":"sessionid","value":"...","domain":".douyin.com"}]'></textarea></label>
-          <label>SOCKS5 代理（可选）<input id="m-proxy" placeholder="socks5://user:pass@host:port" /></label>
+          <label>使用代理（指定 socks 节点，不同节点可并行续火）
+            <select id="m-proxy"><option value="">自动 / 直连</option></select>
+          </label>
           <label class="inline"><input type="checkbox" id="m-enabled" checked /> 启用自动续火</label>
         </div>
       </div>
@@ -305,6 +351,42 @@
       <div class="modal-foot">
         <button class="btn btn-ghost" id="yiyanModalCancel">取消</button>
         <button class="btn btn-primary" id="yiyanModalSave">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 弹窗：代理编辑 -->
+  <div class="modal-mask" id="proxyModal" hidden>
+    <div class="modal">
+      <div class="modal-head">
+        <h2 id="proxyModalTitle">添加代理</h2>
+        <button class="modal-close" id="proxyModalClose">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="form">
+          <label>快捷粘贴链接（可选，自动解析+识别归属地）
+            <input id="p-url" type="text" placeholder="socks5://user:pass@ip:port" />
+            <small class="hint">粘贴后会自动填充下方字段并识别归属地</small>
+          </label>
+          <div class="geo-preview" id="p-geo"></div>
+          <div class="row2">
+            <label>IP / 域名<input id="p-ip" type="text" placeholder="1.2.3.4" /></label>
+            <label>端口<input id="p-port" type="number" placeholder="1080" /></label>
+          </div>
+          <div class="row2">
+            <label>用户名（可选）<input id="p-user" autocomplete="off" /></label>
+            <label>密码（可选）<input id="p-pwd" type="password" autocomplete="off" /></label>
+          </div>
+          <label>名称（可选）<input id="p-label" type="text" placeholder="例如：香港节点" /></label>
+          <div class="form-actions">
+            <button class="btn btn-ghost" id="btn-p-detect" type="button">🌍 识别归属地</button>
+            <span class="geo-status" id="p-geo-status"></span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn btn-ghost" id="proxyModalCancel">取消</button>
+        <button class="btn btn-primary" id="proxyModalSave">保存</button>
       </div>
     </div>
   </div>

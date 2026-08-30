@@ -11,6 +11,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import auth, database, scheduler, yiyan
+from .api.proxies import router as proxies_router
 from .api.accounts import router as accounts_router
 from .api.auth import router as auth_router
 from .api.logs import router as logs_router
@@ -64,6 +65,7 @@ app.add_middleware(
 )
 
 app.include_router(accounts_router)
+app.include_router(proxies_router)
 app.include_router(targets_router)
 app.include_router(tasks_router)
 app.include_router(logs_router)

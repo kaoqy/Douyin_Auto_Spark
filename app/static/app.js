@@ -47,7 +47,7 @@ themeSel.onchange = () => {
 };
 
 /* ===== 导航 ===== */
-const VIEW_TITLES = { dashboard: '仪表盘', accounts: '账号管理', friends: '好友管理', yiyan: '一言库', logs: '续火日志', settings: '设置' };
+const VIEW_TITLES = { dashboard: '仪表盘', accounts: '账号管理', proxies: '代理', friends: '好友管理', yiyan: '一言库', logs: '续火日志', settings: '设置' };
 $$('.nav-item').forEach(btn => {
   btn.onclick = () => {
     $$('.nav-item').forEach(b => b.classList.remove('active'));
@@ -57,6 +57,7 @@ $$('.nav-item').forEach(btn => {
     $('#view-title').textContent = VIEW_TITLES[btn.dataset.view];
     if (btn.dataset.view === 'dashboard') loadDashboard();
     if (btn.dataset.view === 'accounts') loadAccounts();
+    if (btn.dataset.view === 'proxies') loadProxies();
     if (btn.dataset.view === 'friends') loadFriends();
     if (btn.dataset.view === 'yiyan') loadYiyan();
     if (btn.dataset.view === 'logs') loadLogs();
@@ -91,7 +92,6 @@ async function loadDashboard() {
       card('今日失败', tasks.filter(t => (t.status === 'failed' || t.status === 'partial') && t.started_at && t.startsWith(new Date().toISOString().slice(0, 10))).length, '', '次'),
     ].join('');
 
-    // 下次定时
     const strip = $('#schedStrip');
     if (schedule.enabled && schedule.next_run) {
       strip.hidden = false;
@@ -101,13 +101,9 @@ async function loadDashboard() {
       $('#schedText').textContent = '定时续火已关闭（可到设置里开启）';
     }
 
-    // 趋势
     loadTrend(tasks);
-    // 一言
     loadQuote();
-    // 最近任务
     renderRecentTasks(tasks.slice(0, 6));
-    // 账号状态
     renderDashAccounts(accounts);
   } catch (e) { toast('加载仪表盘失败', 'err'); }
 }
@@ -149,7 +145,7 @@ async function loadTrend() {
   const box = $('#trendChart');
   if (!box) return;
   try {
-    const tasks = (await api.get('/api/tasks?limit=50')).tasks || {};
+    const tasks = (await api.get('/api/tasks?limit=50')).tasks || [];
     const days = {};
     tasks.forEach(t => {
       if (!t.started_at) return;
@@ -187,9 +183,7 @@ async function loadQuote() {
 $('#btn-quote-refresh').onclick = () => loadQuote(true);
 $('#btn-quote-push').onclick = async () => {
   toast('推送中…');
-  try {
-    toast('已推送到 TG', 'good');
-  } catch (e) { toast('推送失败', 'err'); }
+  try { toast('已推送到 TG', 'good'); } catch (e) { toast('推送失败', 'err'); }
 };
 
 /* ===== 账号管理 ===== */
@@ -237,19 +231,15 @@ $('#btn-sel-disable').onclick = () => batchSetEnabled(false);
 $('#btn-spark-selected').onclick = async () => {
   const ids = getSelectedIds();
   if (!ids.length) return toast('请先勾选账号', 'err');
-  try {
-    await api.post('/api/tasks/run', { account_ids: ids });
-    toast('已启动续火', 'good');
-    loadDashboard();
-  } catch (e) { toast('启动失败', 'err'); }
+  try { await api.post('/api/tasks/run', { account_ids: ids }); toast('已启动续火', 'good'); loadDashboard(); }
+  catch (e) { toast('启动失败', 'err'); }
 };
 
 function batchSetEnabled(enabled) {
   const ids = getSelectedIds();
   if (!ids.length) return;
   Promise.all(ids.map(id => api.put('/api/accounts/' + id, { enabled }))).then(() => {
-    toast((enabled ? '已启用' : '已停用') + ' ' + ids.length + ' 个账号', 'good');
-    loadAccounts();
+    toast((enabled ? '已启用' : '已停用') + ' ' + ids.length + ' 个账号', 'good'); loadAccounts();
   }).catch(() => toast('批量操作失败', 'err'));
 }
 
@@ -264,11 +254,15 @@ async function verifyAcc(id) {
 async function toggleAccEnabled(id) {
   const a = (window.__accounts || []).find(x => x.id === id);
   if (!a) return;
-  try {
-    await api.put('/api/accounts/' + id, { enabled: !a.enabled });
-    toast(a.enabled ? '已停用' : '已启用', 'good');
-    loadAccounts();
-  } catch (e) { toast('操作失败', 'err'); }
+  try { await api.put('/api/accounts/' + id, { enabled: !a.enabled }); toast(a.enabled ? '已停用' : '已启用', 'good'); loadAccounts(); }
+  catch (e) { toast('操作失败', 'err'); }
+}
+
+async function populateProxySelect(sel, selectedUrl = '') {
+  let proxies = [];
+  try { const list = await api.get('/api/proxies'); proxies = list.filter(p => p.enabled !== false); } catch(e) {}
+  const opt = (v, t) => `<option value="${esc(v)}"${v === selectedUrl ? ' selected' : ''}>${esc(t)}</option>`;
+  sel.innerHTML = opt('', '自动 / 直连') + proxies.map(p => opt(p.url, p.label || p.ip)).join('');
 }
 
 function openAccModal(id = null) {
@@ -276,12 +270,12 @@ function openAccModal(id = null) {
   $('#accModalTitle').textContent = id ? '编辑账号' : '添加账号';
   $('#m-name').value = '';
   $('#m-cookie').value = '';
-  $('#m-proxy').value = '';
   $('#m-enabled').checked = true;
+  populateProxySelect($('#m-proxy'), '');
   if (id) {
     api.get('/api/accounts/' + id).then(a => {
       $('#m-name').value = a.name;
-      $('#m-proxy').value = a.proxy || '';
+      populateProxySelect($('#m-proxy'), a.proxy || '');
       $('#m-enabled').checked = !!a.enabled;
     });
   }
@@ -324,6 +318,164 @@ async function delAcc(id) {
   catch (e) { toast('删除失败', 'err'); }
 }
 
+/* ===== 代理管理 ===== */
+editingProxyId = null;
+async function loadProxies() {
+  try {
+    const list = await api.get('/api/proxies');
+    $('#proxyListHint').textContent = list.length ? '' : '添加后，账号管理里可为每个账号指定对应代理（不同节点并行续火）。';
+    const box = $('#proxyList');
+    if (!list.length) {
+      box.innerHTML = '<div style="color:var(--muted);padding:16px;text-align:center">尚未添加代理节点，点击「＋ 添加代理」</div>';
+      return;
+    }
+    box.innerHTML = list.map(p => {
+      const flag = '🌐';
+      const host = p.ip || ((p.url || '').replace(/socks5.*@/, '').replace(/^socks5:\/\//, ''));
+      const has = p.ip || (p.url || '').includes('socks5');
+      const geoHtml = p.geo_country ? `<div class="proxy-geo-line">${flag} ${esc(p.geo_country)} ${esc(p.geo_region || '')}${p.geo_ip ? ' · ' + esc(p.geo_ip) : ''}</div>` : (has ? '<div class="proxy-geo-line"><span class="badge gray">归属地未识别</span></div>' : '');
+      const testHtml = proxyTestHtml(p);
+      return `<div class="proxy-card ${p.enabled === false ? 'proxy-disabled' : ''}">
+        <div class="proxy-top">
+          <div class="proxy-flag">${flag}</div>
+          <div class="proxy-main">
+            <div class="proxy-name">${esc(p.label || (p.geo_country ? p.geo_country + ' ' + p.geo_region : host))} ${p.enabled === false ? '<span class="badge gray">停用</span>' : ''}</div>
+            <div class="proxy-meta">${esc(has ? host : '请编辑补全')}${p.port ? ':' + p.port : ''}</div>
+          </div>
+          <div class="proxy-actions">
+            <button class="btn btn-ghost btn-sm" onclick="testProxy(${p.id})">测试</button>
+            <button class="btn btn-ghost btn-sm" onclick="openProxyModal(${p.id})">编辑</button>
+            <button class="btn btn-danger btn-sm" onclick="delProxy(${p.id})">删除</button>
+          </div>
+        </div>
+        ${geoHtml}
+        <div class="proxy-test" id="ptest-${p.id}">${testHtml}</div>
+      </div>`;
+    }).join('');
+  } catch (e) { toast('加载代理失败', 'err'); }
+}
+
+function proxyTestHtml(p) {
+  if (!p.last_test) return '<span class="ptest-idle">尚未测速</span>';
+  const cls = p.last_test === 'ok' ? 't-ok' : 't-bad';
+  const latency = Number(p.last_latency_ms || 0);
+  const detail = p.last_test_message || (p.last_test === 'ok' ? '测试成功' : '测试失败');
+  const tested = p.last_test_at ? ` · ${esc(p.last_test_at.slice(5, 16))}` : '';
+  return `<span class="${cls}">${cls === 't-ok' ? '●' : '●'} ${esc(detail)}${latency && !detail.includes('ms') ? ` · ${latency} ms` : ''}${tested}</span>`;
+}
+
+$('#btn-add-proxy').onclick = () => openProxyModal();
+$('#proxyModalClose').onclick = $('#proxyModalCancel').onclick = () => $('#proxyModal').hidden = true;
+
+$('#p-url').oninput = () => {
+  const url = $('#p-url').value.trim();
+  if (!url.includes('socks5://')) return;
+  const m = url.match(/socks5:\/\/(?:([^:@\/]+):([^@\/]*))?@?([^:\/\s]+):(\d+)/);
+  if (m) {
+    $('#p-ip').value = m[3]; $('#p-port').value = m[4];
+    if (m[1]) $('#p-user').value = decodeURIComponent(m[1]);
+    if (m[2]) $('#p-pwd').value = decodeURIComponent(m[2]);
+    $('#p-geo-status').textContent = '已解析，点「识别归属地」…';
+  }
+};
+
+$('#btn-p-detect').onclick = async () => {
+  const st = $('#p-geo-status');
+  const body = {};
+  const pw = $('#p-pwd').value.trim();
+  if (editingProxyId && !pw) { body.proxy_id = editingProxyId; }
+  else {
+    const url = buildProxyUrlFromForm() || $('#p-url').value.trim();
+    if (!url) { toast('请填写 IP 或链接', 'err'); return; }
+    body.url = url;
+  }
+  st.textContent = '识别中…';
+  try {
+    const r = await api.post('/api/proxies/detect', body);
+    if (r.ok) { $('#p-geo').innerHTML = `<div class="geo-preview-item">🌐 ${esc(r.country || '')} ${esc(r.region || '')}（${esc(r.ip || '')}）</div>`; st.textContent = '✅ 识别成功'; }
+    else { $('#p-geo').innerHTML = ''; st.textContent = '❌ ' + (r.message || '识别失败'); }
+  } catch (e) { st.textContent = '❌ ' + e.message; }
+};
+
+function buildProxyUrlFromForm() {
+  const ip = $('#p-ip').value.trim(), port = $('#p-port').value.trim();
+  if (!ip || !port) return '';
+  const u = $('#p-user').value.trim(), pw = $('#p-pwd').value.trim();
+  return 'socks5://' + (u ? encodeURIComponent(u) + (pw ? ':' + encodeURIComponent(pw) : '') + '@' : '') + ip + ':' + port;
+}
+
+$('#proxyModalSave').onclick = async () => {
+  const ip = $('#p-ip').value.trim(), port = $('#p-port').value.trim();
+  const pw = $('#p-pwd').value.trim();
+  const pasted = $('#p-url').value.trim();
+  const body = { label: $('#p-label').value.trim() };
+  if (editingProxyId && !pw && !pasted) {
+    if (ip) body.ip = ip;
+    if (port) body.port = +port;
+    const u = $('#p-user').value.trim();
+    if (u) body.username = u;
+  } else {
+    const url = buildProxyUrlFromForm() || pasted;
+    if (!url) { toast('请填写 IP/端口 或 完整链接', 'err'); return; }
+    body.url = url;
+  }
+  try {
+    if (editingProxyId) await api.put('/api/proxies/' + editingProxyId, body);
+    else await api.post('/api/proxies', body);
+    $('#proxyModal').hidden = true;
+    toast('保存成功', 'good');
+    loadProxies();
+  } catch (e) { toast('保存失败：' + e.message, 'err'); }
+};
+
+function openProxyModal(id = null) {
+  editingProxyId = id;
+  $('#proxyModalTitle').textContent = id ? '编辑代理' : '添加代理';
+  ['p-url', 'p-ip', 'p-port', 'p-user', 'p-pwd', 'p-label'].forEach(i => $('#' + i).value = '');
+  $('#p-geo').innerHTML = ''; $('#p-geo-status').textContent = '';
+  $('#p-pwd').placeholder = id ? '留空表示不修改' : '';
+  if (id) {
+    api.get('/api/proxies').then(list => {
+      const p = list.find(x => x.id === id);
+      if (!p) return;
+      if (p.ip) $('#p-ip').value = p.ip;
+      if (p.port) $('#p-port').value = p.port;
+      if (p.username) $('#p-user').value = p.username;
+      if (p.label) $('#p-label').value = p.label;
+      $('#p-geo').innerHTML = p.geo_country ? `<div class="geo-preview-item">🌐 ${esc(p.geo_country)} ${esc(p.geo_region || '')}</div>` : '';
+    });
+  }
+  $('#proxyModal').hidden = false;
+}
+
+window.testProxy = async (id) => {
+  const el = $('#ptest-' + id);
+  const btn = document.querySelector(`button[onclick="testProxy(${id})"]`);
+  if (el) el.innerHTML = '<span class="ptest-running"><i></i> 正在测速…</span>';
+  if (btn) { btn.disabled = true; btn.textContent = '测速中'; }
+  try {
+    const r = await api.post('/api/proxies/' + id + '/test', {});
+    if (el) el.innerHTML = `<span class="${r.ok ? 't-ok' : 't-bad'}">${r.ok ? '●' : '●'} ${esc(r.message)} · 已保存</span>`;
+  } catch (e) { if (el) el.innerHTML = `<span class="t-bad">● 测试失败：${esc(e.message || '网络错误')}</span>`; }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '测试'; } }
+};
+
+window.delProxy = async (id) => {
+  if (!confirm('确定删除该代理？')) return;
+  try { await api.del('/api/proxies/' + id); toast('已删除', 'good'); loadProxies(); }
+  catch (e) { toast('删除失败', 'err'); }
+};
+
+$('#btn-proxy-test-all').onclick = async () => {
+  const btn = $('#btn-proxy-test-all');
+  try {
+    const list = await api.get('/api/proxies');
+    btn.disabled = true; btn.textContent = `测速中 0/${list.length}`;
+    for (let i = 0; i < list.length; i++) { btn.textContent = `测速中 ${i + 1}/${list.length}`; await testProxy(list[i].id); }
+    btn.textContent = '🧪 测试全部'; btn.disabled = false;
+  } catch (e) { btn.textContent = '🧪 测试全部'; btn.disabled = false; toast('批量测速失败', 'err'); }
+};
+
 /* ===== 好友管理 ===== */
 let currentFriendAccountId = null;
 let editingFriendId = null;
@@ -335,10 +487,7 @@ async function loadFriends() {
     if (!select.children.length) {
       select.innerHTML = '<option value="">选择账号</option>' +
         accounts.filter(a => a.enabled).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
-      select.onchange = () => {
-        currentFriendAccountId = select.value ? parseInt(select.value) : null;
-        renderFriends();
-      };
+      select.onchange = () => { currentFriendAccountId = select.value ? parseInt(select.value) : null; renderFriends(); };
     }
     if (!currentFriendAccountId && accounts.length) {
       currentFriendAccountId = accounts.find(a => a.enabled)?.id || accounts[0].id;
@@ -349,10 +498,7 @@ async function loadFriends() {
 }
 
 async function renderFriends() {
-  if (!currentFriendAccountId) {
-    $('#friendsTable tbody').innerHTML = '<tr><td colspan="4" style="color:var(--muted)">请先选择账号</td></tr>';
-    return;
-  }
+  if (!currentFriendAccountId) { $('#friendsTable tbody').innerHTML = '<tr><td colspan="4" style="color:var(--muted)">请先选择账号</td></tr>'; return; }
   try {
     const data = await api.get('/api/targets?account_id=' + currentFriendAccountId);
     const targets = data.targets || [];
@@ -372,9 +518,7 @@ async function renderFriends() {
 
 $('#btn-add-friend').onclick = () => {
   if (!currentFriendAccountId) return toast('请先选择账号', 'err');
-  $('#m-friend-name').value = '';
-  editingFriendId = null;
-  $('#friendModal').hidden = false;
+  $('#m-friend-name').value = ''; editingFriendId = null; $('#friendModal').hidden = false;
 };
 
 $('#btn-fetch-friends').onclick = () => {
@@ -386,29 +530,19 @@ $('#friendModalClose').onclick = $('#friendModalCancel').onclick = () => $('#fri
 $('#friendModalSave').onclick = async () => {
   const name = $('#m-friend-name').value.trim();
   if (!name) return toast('请输入好友名称', 'err');
-  try {
-    await api.post('/api/targets', { account_id: currentFriendAccountId, name });
-    $('#friendModal').hidden = true;
-    toast('添加成功', 'good');
-    renderFriends();
-  } catch (e) { toast('添加失败', 'err'); }
+  try { await api.post('/api/targets', { account_id: currentFriendAccountId, name }); $('#friendModal').hidden = true; toast('添加成功', 'good'); renderFriends(); }
+  catch (e) { toast('添加失败', 'err'); }
 };
 
 window.toggleFriend = async (id, enabled) => {
-  try {
-    await api.put('/api/targets/' + id, { enabled });
-    toast(enabled ? '已启用' : '已停用', 'good');
-    renderFriends();
-  } catch (e) { toast('操作失败', 'err'); }
+  try { await api.put('/api/targets/' + id, { enabled }); toast(enabled ? '已启用' : '已停用', 'good'); renderFriends(); }
+  catch (e) { toast('操作失败', 'err'); }
 };
 
 window.deleteFriend = async (id) => {
   if (!confirm('确定删除该好友？')) return;
-  try {
-    await api.del('/api/targets/' + id);
-    toast('已删除', 'good');
-    renderFriends();
-  } catch (e) { toast('删除失败', 'err'); }
+  try { await api.del('/api/targets/' + id); toast('已删除', 'good'); renderFriends(); }
+  catch (e) { toast('删除失败', 'err'); }
 };
 
 /* ===== 自动获取好友列表 ===== */
@@ -417,24 +551,18 @@ function openFetchFriendsModal(accountId) {
   $('#fetch-friends-status').textContent = '正在获取好友列表…';
   $('#fetch-friends-list').innerHTML = '';
   $('#fetchFriendsModalSave').disabled = true;
-
   api.get('/api/accounts/' + accountId + '/friends').then(r => {
     const friends = r.friends || [];
-    if (!friends.length) {
-      $('#fetch-friends-status').textContent = '未获取到好友列表';
-      return;
-    }
+    if (!friends.length) { $('#fetch-friends-status').textContent = '未获取到好友列表'; return; }
     $('#fetch-friends-status').textContent = `共获取到 ${friends.length} 位好友，勾选后点击添加`;
-    $('#fetch-friends-list').innerHTML = friends.map((f, i) => `
+    $('#fetch-friends-list').innerHTML = friends.map((f) => `
       <label class="friend-pick-item">
         <input type="checkbox" class="friend-pick-check" value="${esc(f)}" />
         <span>${esc(f)}</span>
       </label>
     `).join('');
     $('#fetchFriendsModalSave').disabled = false;
-  }).catch(e => {
-    $('#fetch-friends-status').textContent = '获取失败: ' + e.message;
-  });
+  }).catch(e => { $('#fetch-friends-status').textContent = '获取失败: ' + e.message; });
 }
 
 $('#fetchFriendsModalClose').onclick = $('#fetchFriendsModalCancel').onclick = () => $('#fetchFriendsModal').hidden = true;
@@ -442,11 +570,8 @@ $('#fetchFriendsModalSave').onclick = async () => {
   const checked = $$('.friend-pick-check:checked');
   if (!checked.length) return toast('请先勾选好友', 'err');
   const names = checked.map(c => c.value);
-
   try {
-    for (const name of names) {
-      await api.post('/api/targets', { account_id: currentFriendAccountId, name });
-    }
+    for (const name of names) { await api.post('/api/targets', { account_id: currentFriendAccountId, name }); }
     $('#fetchFriendsModal').hidden = true;
     toast(`已添加 ${names.length} 位好友`, 'good');
     renderFriends();
@@ -455,7 +580,6 @@ $('#fetchFriendsModalSave').onclick = async () => {
 
 /* ===== 一言库 ===== */
 let editingYiyanId = null;
-
 async function loadYiyan() {
   try {
     const data = await api.get('/api/yiyan');
@@ -474,32 +598,19 @@ async function loadYiyan() {
   } catch (e) { toast('加载一言库失败', 'err'); }
 }
 
-$('#btn-add-yiyan').onclick = () => {
-  $('#m-yiyan-text').value = '';
-  $('#m-yiyan-source').value = '';
-  editingYiyanId = null;
-  $('#yiyanModal').hidden = false;
-};
-
+$('#btn-add-yiyan').onclick = () => { $('#m-yiyan-text').value = ''; $('#m-yiyan-source').value = ''; editingYiyanId = null; $('#yiyanModal').hidden = false; };
 $('#yiyanModalClose').onclick = $('#yiyanModalCancel').onclick = () => $('#yiyanModal').hidden = true;
 $('#yiyanModalSave').onclick = async () => {
   const hitokoto = $('#m-yiyan-text').value.trim();
   const source = $('#m-yiyan-source').value.trim();
   if (!hitokoto) return toast('内容不能为空', 'err');
-  try {
-    await api.post('/api/yiyan', { hitokoto, source });
-    $('#yiyanModal').hidden = true;
-    toast('添加成功', 'good');
-    loadYiyan();
-  } catch (e) { toast('添加失败', 'err'); }
+  try { await api.post('/api/yiyan', { hitokoto, source }); $('#yiyanModal').hidden = true; toast('添加成功', 'good'); loadYiyan(); }
+  catch (e) { toast('添加失败', 'err'); }
 };
 
 $('#btn-import-yiyan').onclick = async () => {
-  try {
-    const r = await api.post('/api/yiyan/import', {});
-    toast(`已导入 ${r.imported} 条一言`, 'good');
-    loadYiyan();
-  } catch (e) { toast('导入失败', 'err'); }
+  try { const r = await api.post('/api/yiyan/import', {}); toast(`已导入 ${r.imported} 条一言`, 'good'); loadYiyan(); }
+  catch (e) { toast('导入失败', 'err'); }
 };
 
 $('#btn-random-yiyan').onclick = async () => {
@@ -513,20 +624,14 @@ $('#btn-random-yiyan').onclick = async () => {
 };
 
 window.toggleYiyan = async (id, enabled) => {
-  try {
-    await api.put('/api/yiyan/' + id, { enabled });
-    toast(enabled ? '已启用' : '已停用', 'good');
-    loadYiyan();
-  } catch (e) { toast('操作失败', 'err'); }
+  try { await api.put('/api/yiyan/' + id, { enabled }); toast(enabled ? '已启用' : '已停用', 'good'); loadYiyan(); }
+  catch (e) { toast('操作失败', 'err'); }
 };
 
 window.deleteYiyan = async (id) => {
   if (!confirm('确定删除？')) return;
-  try {
-    await api.del('/api/yiyan/' + id);
-    toast('已删除', 'good');
-    loadYiyan();
-  } catch (e) { toast('删除失败', 'err'); }
+  try { await api.del('/api/yiyan/' + id); toast('已删除', 'good'); loadYiyan(); }
+  catch (e) { toast('删除失败', 'err'); }
 };
 
 /* ===== 日志 ===== */
@@ -542,11 +647,7 @@ async function loadLogs(reset = true) {
     });
     const list = $('#logList');
     const countBox = $('#logCount');
-    if (!logs.length) {
-      list.innerHTML = '<div style="color:var(--muted);padding:20px">暂无日志</div>';
-      countBox.textContent = '共 0 条';
-      return;
-    }
+    if (!logs.length) { list.innerHTML = '<div style="color:var(--muted);padding:20px">暂无日志</div>'; countBox.textContent = '共 0 条'; return; }
     list.innerHTML = logs.map(l => {
       const t = (l.created_at || '').slice(5, 16);
       const badge = l.status === 'success' ? '<span class="badge ok">成功</span>'
@@ -568,11 +669,8 @@ $('#logSearch').addEventListener('input', () => loadLogs(false));
 $('#logFilter').addEventListener('change', () => loadLogs(true));
 $('#btn-clear-logs').onclick = async () => {
   if (!confirm('确定清空全部日志？此操作不可恢复。')) return;
-  try {
-    await api.del('/api/logs');
-    toast('已清空日志', 'good');
-    loadLogs(); loadDashboard();
-  } catch (e) { toast('清空失败', 'err'); }
+  try { await api.del('/api/logs'); toast('已清空日志', 'good'); loadLogs(); loadDashboard(); }
+  catch (e) { toast('清空失败', 'err'); }
 };
 
 /* ===== 设置 ===== */
@@ -588,6 +686,14 @@ async function loadSettings() {
     $('#s-tg_silent').checked = (s.tg_silent || '0') === '1';
     $('#s-schedule_enabled').checked = (s.schedule_enabled || '1') === '1';
     $('#s-schedule_cron').value = s.schedule_cron || '0 8 * * *';
+    $('#s-anti_ban_enabled').checked = (s.anti_ban_enabled || '1') === '1';
+    $('#s-anti_ban_wait_min').value = s.anti_ban_wait_min || '120';
+    $('#s-anti_ban_wait_max').value = s.anti_ban_wait_max || '300';
+    $('#s-anti_ban_window_hour').value = s.anti_ban_window_hour || '7';
+    $('#s-proxy_force').checked = (s.proxy_force || '0') === '1';
+    $('#s-proxy_fallback').checked = (s.proxy_fallback || '1') === '1';
+    $('#s-spark_delay_min').value = s.spark_delay_min || '3';
+    $('#s-spark_delay_max').value = s.spark_delay_max || '8';
     $('#s-message_template').value = s.message_template || '';
     $('#s-yiyan_include_source').value = s.yiyan_include_source || '1';
     $('#s-log_retention_days').value = s.log_retention_days || '30';
@@ -606,6 +712,14 @@ function collectSettings() {
     tg_silent: chk('s-tg_silent'),
     schedule_enabled: chk('s-schedule_enabled'),
     schedule_cron: val('s-schedule_cron').trim(),
+    anti_ban_enabled: chk('s-anti_ban_enabled'),
+    anti_ban_wait_min: val('s-anti_ban_wait_min'),
+    anti_ban_wait_max: val('s-anti_ban_wait_max'),
+    anti_ban_window_hour: val('s-anti_ban_window_hour'),
+    proxy_force: chk('s-proxy_force'),
+    proxy_fallback: chk('s-proxy_fallback'),
+    spark_delay_min: val('s-spark_delay_min'),
+    spark_delay_max: val('s-spark_delay_max'),
     message_template: val('s-message_template'),
     yiyan_include_source: val('s-yiyan_include_source'),
     log_retention_days: val('s-log_retention_days', '30'),
@@ -615,42 +729,25 @@ function collectSettings() {
 $('#btn-save-all').onclick = async () => {
   const status = $('#saveStatus');
   status.textContent = '保存中…'; status.className = 'save-status';
-  try {
-    await api.post('/api/settings', collectSettings());
-    status.textContent = '✅ 已保存'; status.className = 'save-status ok';
-    setTimeout(() => status.textContent = '', 2500);
-  } catch (e) { status.textContent = '保存失败'; status.className = 'save-status'; }
+  try { await api.post('/api/settings', collectSettings()); status.textContent = '✅ 已保存'; status.className = 'save-status ok'; setTimeout(() => status.textContent = '', 2500); }
+  catch (e) { status.textContent = '保存失败'; status.className = 'save-status'; }
 };
 $('#btn-save-schedule').onclick = async () => {
-  try {
-    await api.put('/api/tasks/schedule', {
-      enabled: $('#s-schedule_enabled').checked,
-      cron: $('#s-schedule_cron').value.trim(),
-    });
-    toast('定时配置已保存', 'good');
-  } catch (e) { toast('保存失败', 'err'); }
+  try { await api.put('/api/tasks/schedule', { enabled: $('#s-schedule_enabled').checked, cron: $('#s-schedule_cron').value.trim() }); toast('定时配置已保存', 'good'); }
+  catch (e) { toast('保存失败', 'err'); }
 };
 $('#btn-save-template').onclick = async () => {
-  try {
-    await api.put('/api/settings', {
-      message_template: $('#s-message_template').value,
-      yiyan_include_source: $('#s-yiyan_include_source').value,
-    });
-    toast('模板已保存', 'good');
-  } catch (e) { toast('保存失败', 'err'); }
+  try { await api.put('/api/settings', { message_template: $('#s-message_template').value, yiyan_include_source: $('#s-yiyan_include_source').value }); toast('模板已保存', 'good'); }
+  catch (e) { toast('保存失败', 'err'); }
 };
 $('#btn-save-retention').onclick = async () => {
-  try {
-    await api.put('/api/settings', { log_retention_days: $('#s-log_retention_days').value });
-    toast('设置已保存', 'good');
-  } catch (e) { toast('保存失败', 'err'); }
+  try { await api.put('/api/settings', { log_retention_days: $('#s-log_retention_days').value }); toast('设置已保存', 'good'); }
+  catch (e) { toast('保存失败', 'err'); }
 };
 $('#btn-test-tg').onclick = async () => {
   toast('发送测试中…');
-  try {
-    await api.post('/api/settings', collectSettings());
-    toast('测试消息已发送', 'good');
-  } catch (e) { toast('发送失败', 'err'); }
+  try { await api.post('/api/settings', collectSettings()); toast('测试消息已发送', 'good'); }
+  catch (e) { toast('发送失败', 'err'); }
 };
 
 /* ===== 立即续火 + 运行状态轮询 ===== */
@@ -682,10 +779,7 @@ function pollRun() {
         $('#runBar').style.width = '100%';
         const last = await api.get('/api/tasks');
         const lastTask = (last.tasks || [])[0];
-        if (lastTask) {
-          $('#runInfo').textContent = `✅ 完成（${lastTask.status}）`;
-          addRunLine(`完成：${lastTask.message || ''}`);
-        }
+        if (lastTask) { $('#runInfo').textContent = `✅ 完成（${lastTask.status}）`; addRunLine(`完成：${lastTask.message || ''}`); }
         loadDashboard(); loadAccounts(); loadLogs();
       }
     } catch (e) { clearInterval(pollTimer); }
@@ -703,27 +797,18 @@ function addRunLine(txt) {
 
 /* ===== 版本 ===== */
 async function loadVersion() {
-  try {
-    const h = await api.get('/api/health');
-    const el = document.getElementById('app-version');
-    if (el && h && h.version) el.textContent = 'v' + h.version;
-  } catch (e) { }
+  try { const h = await api.get('/api/health'); const el = document.getElementById('app-version'); if (el && h && h.version) el.textContent = 'v' + h.version; } catch (e) { }
 }
 
 /* ===== 健康检查 ===== */
 $('#btn-health').onclick = async () => {
-  try {
-    const h = await api.get('/api/health');
-    toast(`服务正常 · v${h.version} · 上次续火 ${h.time}`, 'good');
-  } catch (e) { toast('服务异常', 'err'); }
+  try { const h = await api.get('/api/health'); toast(`服务正常 · v${h.version} · 上次续火 ${h.time}`, 'good'); }
+  catch (e) { toast('服务异常', 'err'); }
 };
 
 /* ===== 账户：当前用户 / 退出 / 改密 ===== */
 async function loadMe() {
-  try {
-    const me = await api.get('/api/auth/me');
-    $('#btn-user').textContent = '👤 ' + (me.user?.username || '');
-  } catch (e) { }
+  try { const me = await api.get('/api/auth/me'); $('#btn-user').textContent = '👤 ' + (me.user?.username || ''); } catch (e) { }
 }
 $('#btn-logout').onclick = async () => {
   try { await api.post('/api/auth/logout', {}); } catch (e) { }
