@@ -15,20 +15,62 @@
 
 ## 快速开始
 
-### Docker 部署
+### 方式一：Docker run（推荐）
 
 ```bash
-# 克隆项目
-git clone https://github.com/kaoqy/douyin-auto-spark.git
-cd douyin-auto-spark
+# 拉取镜像
+docker pull kaoqy666/douyin-auto-spark:latest
 
-# 启动
-docker compose up -d
+# 启动（替换为你的管理员密码）
+docker run -d \
+  --name douyin-auto-spark \
+  -p 8000:8000 \
+  -e DAS_ADMIN_USER=admin \
+  -e DAS_ADMIN_PASSWORD=your_secure_password \
+  -v douyin_data:/app/data \
+  --restart unless-stopped \
+  kaoqy666/douyin-auto-spark:latest
+
+# 查看日志
+docker logs -f douyin-auto-spark
 
 # 访问 http://localhost:8000
 ```
 
-### 本地部署
+### 方式二：Docker Compose
+
+```bash
+# 拉取镜像
+docker pull kaoqy666/douyin-auto-spark:latest
+
+# 启动
+docker compose up -d
+
+# 查看日志
+docker compose logs -f
+
+# 访问 http://localhost:8000
+```
+
+**docker-compose.yml：**
+
+```yaml
+services:
+  das:
+    image: kaoqy666/douyin-auto-spark:latest
+    container_name: douyin-auto-spark
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Shanghai
+      - DAS_ADMIN_USER=admin
+      - DAS_ADMIN_PASSWORD=your_secure_password
+    volumes:
+      - ./data:/app/data
+```
+
+### 方式三：本地部署
 
 ```bash
 # 安装依赖
@@ -37,6 +79,8 @@ playwright install chromium
 
 # 启动
 python run.py --host 0.0.0.0 --port 8000
+
+# 访问 http://localhost:8000
 ```
 
 ## 配置说明
@@ -57,6 +101,18 @@ python run.py --host 0.0.0.0 --port 8000
 ### 设置定时
 
 在设置页面配置 Cron 表达式，如 `0 8 * * *`（每天 8 点）。
+
+### 环境变量
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `DAS_ADMIN_USER` | `admin` | 管理员用户名 |
+| `DAS_ADMIN_PASSWORD` | `admin123` | 管理员密码 |
+| `APP_HOST` | `0.0.0.0` | 监听地址 |
+| `APP_PORT` | `8000` | 监听端口 |
+| `DAS_DATA_DIR` | `./data` | 数据目录 |
+| `PLAYWRIGHT_HEADLESS` | `1` | 无头模式 |
+| `TZ` | `Asia/Shanghai` | 时区 |
 
 ## 项目结构
 
