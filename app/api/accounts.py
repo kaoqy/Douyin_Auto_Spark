@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import auth, database
+from ..douyin_runner import verify_cookie_sync, fetch_friend_list_sync
 
 log = logging.getLogger("das.api.accounts")
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
@@ -75,3 +76,38 @@ def get_account(account_id: int):
         raise HTTPException(status_code=404, detail="账号不存在")
     acc["proxy"] = database.mask_proxy_url(acc.get("proxy", ""))
     return acc
+
+
+@router.post("/verify")
+def verify_cookie(body: dict[str, Any]):
+    """验证 Cookie 是否有效（不需要先创建账号）"""
+    cookie = body.get("cookie", "")
+    proxy = (body.get("proxy") or "").strip()
+    if not cookie:
+        raise HTTPException(status_code=400, detail="Cookie 不能为空")
+    try:
+        account = {"cookie": cookie, "proxy": proxy}
+        result = verify_cookie_sync(account)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{account_id}/verify")
+def verify_account_cookie(account_id: int):
+    """验证账号 Cookie 是否有效"""
+    acc = database.get_account(account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    result = verify_cookie_sync(acc)
+    return result
+
+
+@router.get("/{account_id}/friends")
+def get_account_friends(account_id: int):
+    """自动获取账号好友列表"""
+    acc = database.get_account(account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    friends = fetch_friend_list_sync(acc)
+    return {"friends": friends, "count": len(friends)}

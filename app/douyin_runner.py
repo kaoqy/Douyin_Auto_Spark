@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
-import shutil
-import tempfile
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -77,9 +77,145 @@ def _safe_proxy_label(proxy_url: str) -> str:
         return "代理"
 
 
+def _parse_proxy_url(proxy_url: str) -> dict | None:
+    """解析 SOCKS5 代理 URL 为 Playwright proxy 配置"""
+    if not proxy_url:
+        return None
+    try:
+        # socks5://user:pass@host:port
+        m = re.match(r'socks5://(?:(?P<user>[^:@]+):(?P<pass>[^@]*)@)?(?P<host>[^:]+):(?P<port>\d+)', proxy_url)
+        if not m:
+            return None
+        proxy = {"server": f"socks5://{m.group('host')}:{m.group('port')}"}
+        if m.group("user"):
+            proxy["username"] = m.group("user")
+        if m.group("pass"):
+            proxy["password"] = m.group("pass")
+        return proxy
+    except Exception as e:
+        log.error("解析代理 URL 失败: %s", e)
+        return None
+
+
+async def verify_cookie(account: dict) -> dict:
+    """验证账号 Cookie 是否有效"""
+    from playwright.async_api import async_playwright
+
+    proxy_url = account.get("proxy", "") or ""
+    proxy_config = _parse_proxy_url(proxy_url)
+
+    try:
+        cookies = parse_cookie_json(account["cookie"])
+    except Exception as e:
+        return {"valid": False, "message": f"Cookie 解析失败: {e}"}
+
+    async with async_playwright() as p:
+        browser = None
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                proxy=proxy_config,
+            )
+            context = await browser.new_context()
+            await context.add_cookies([c.to_playwright_cookie() for c in cookies])
+            page = await context.new_page()
+            await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
+
+            # 等待搜索框或登录提示
+            search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
+            visible = await search_input.wait_for(state="visible", timeout=15000).then(lambda: True).catch(lambda: False)
+
+            if visible:
+                return {"valid": True, "message": "Cookie 有效"}
+
+            # 检查是否需要登录
+            login_btn = page.locator('text=登录, text=扫码登录').first()
+            if await login_btn.is_visible(timeout=3000):
+                return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
+
+            return {"valid": False, "message": "无法确认 Cookie 状态"}
+
+        except Exception as e:
+            return {"valid": False, "message": f"验证失败: {e}"}
+        finally:
+            if browser:
+                await browser.close()
+
+
+async def fetch_friend_list(account: dict) -> list[str]:
+    """自动获取抖音聊天页的好友列表"""
+    from playwright.async_api import async_playwright
+
+    proxy_url = account.get("proxy", "") or ""
+    proxy_config = _parse_proxy_url(proxy_url)
+
+    try:
+        cookies = parse_cookie_json(account["cookie"])
+    except Exception as e:
+        log.error("Cookie 解析失败: %s", e)
+        return []
+
+    friends = []
+    async with async_playwright() as p:
+        browser = None
+        try:
+            browser = await p.chromium.launch(
+                headless=True,
+                proxy=proxy_config,
+            )
+            context = await browser.new_context()
+            await context.add_cookies([c.to_playwright_cookie() for c in cookies])
+            page = await context.new_page()
+            await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
+
+            # 等待搜索框出现
+            search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
+            visible = await search_input.wait_for(state="visible", timeout=15000).then(lambda: True).catch(lambda: False)
+            if not visible:
+                return []
+
+            # 等待会话列表加载
+            await page.wait_for_timeout(3000)
+
+            # 获取会话列表中的好友名称
+            # 抖音聊天页会话列表项
+            conversation_items = page.locator('[class*="conversationItem"], [class*="ConversationItem"], .SearchPanelitembox, [class*="chatItem"]').all()
+
+            for item in conversation_items:
+                try:
+                    # 尝试获取名称
+                    name_el = item.locator('[class*="name"], [class*="Name"], [class*="title"], [class*="Title"]').first()
+                    name = await name_el.text_content(timeout=2000)
+                    if name and name.strip():
+                        friends.append(name.strip())
+                except Exception:
+                    pass
+
+            # 如果上面的选择器没找到，尝试更通用的方式
+            if not friends:
+                # 获取所有会话项文本
+                all_items = page.locator('.SearchPanelitembox, [class*="conversation"], [class*="chatItem"]').all()
+                for item in all_items:
+                    try:
+                        text = await item.text_content(timeout=2000)
+                        if text and len(text.strip()) > 0 and len(text.strip()) < 50:
+                            friends.append(text.strip().split('\n')[0])
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            log.error("获取好友列表失败: %s", e)
+        finally:
+            if browser:
+                await browser.close()
+
+    # 去重
+    return list(dict.fromkeys(friends))
+
+
 async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     """执行单个账号的续火任务"""
-    from playwright.async_api import async_playwright, Browser, Page, Locator
+    from playwright.async_api import async_playwright
 
     result = AccountResult(
         account_id=account["id"],
@@ -90,6 +226,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     if proxy_url:
         result.channel = "socks"
 
+    proxy_config = _parse_proxy_url(proxy_url)
     proxy_label = _safe_proxy_label(proxy_url)
     log.info("👤 [%s] 账号：%s", proxy_label, account["name"])
 
@@ -117,13 +254,14 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     include_source = database.get_setting("yiyan_include_source", "1") == "1"
 
     async with async_playwright() as p:
-        browser_path = os.environ.get("PLAYWRIGHT_BROWSER_PATH", "").strip() or None
-        headless = os.environ.get("PLAYWRIGHT_HEADLESS", "1") != "0"
-
-        browser: Browser | None = None
+        browser = None
         try:
+            browser_path = os.environ.get("PLAYWRIGHT_BROWSER_PATH", "").strip() or None
+            headless = os.environ.get("PLAYWRIGHT_HEADLESS", "1") != "0"
+
             browser = await p.chromium.launch(
                 headless=headless,
+                proxy=proxy_config,
                 **({"executablePath": browser_path} if browser_path else {}),
             )
 
@@ -171,21 +309,51 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     result.fail += 1
                     continue
 
-                # 点击「发消息」
+                # 点击「发消息」或进入会话
                 try:
-                    await search_result.get_by_text(r"^(发消息|发私信)$").click(timeout=5000)
+                    send_btn = search_result.locator('text=发消息, text=发私信').first()
+                    if await send_btn.is_visible(timeout=3000):
+                        await send_btn.click(timeout=5000)
+                    else:
+                        await search_result.click(timeout=5000)
                 except Exception:
-                    # 备用：直接点击搜索结果
                     await search_result.click(timeout=5000)
 
                 log.info("  [%s] 已打开私信：%s", account["name"], target_name)
 
-                # 定位输入框
-                editor_input = page.locator(
-                    '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]'
-                ).first()
-                await editor_input.wait_for(state="visible", timeout=10000)
+                # 等待聊天页加载
+                await page.wait_for_timeout(2000)
+
+                # 定位输入框 - 尝试多种选择器
+                editor_input = None
+                selectors = [
+                    '[data-slate-editor="true"][contenteditable="true"]',
+                    '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]',
+                    '[contenteditable="true"][data-slate-editor="true"]',
+                    '.public-DraftEditor-content',
+                    '[contenteditable="true"]',
+                ]
+                for sel in selectors:
+                    try:
+                        editor_input = page.locator(sel).first()
+                        if await editor_input.is_visible(timeout=3000):
+                            break
+                    except Exception:
+                        continue
+
+                if not editor_input:
+                    log.warning("  [%s] 无法定位输入框", account["name"])
+                    missing_names.append(target_name)
+                    result.detail.append({
+                        "target": target_name,
+                        "status": "failed",
+                        "message": "无法定位输入框",
+                    })
+                    result.fail += 1
+                    continue
+
                 await editor_input.click()
+                await page.wait_for_timeout(500)
 
                 # 渲染消息
                 msg = yiyan.render_message(
@@ -195,10 +363,13 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     include_source=include_source,
                 )
 
-                await page.keyboard.insert_text(msg)
+                # 输入消息
+                await editor_input.fill("")
+                await page.keyboard.type(msg, delay=30)
+                await page.wait_for_timeout(500)
                 await page.keyboard.press("Enter")
                 log.info("  [%s] 已发送消息：%s", account["name"], target_name)
-                await page.wait_for_timeout(1000)
+                await page.wait_for_timeout(1500)
 
                 result.detail.append({
                     "target": target_name,
@@ -208,7 +379,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 result.success += 1
                 database.touch_target_result(target["id"], "success")
 
-            await page.wait_for_timeout(5000)
+            await page.wait_for_timeout(3000)
 
             # 汇总
             if missing_names:
@@ -297,3 +468,13 @@ async def _capture_screenshot(page: Any, name: str) -> None:
 def run_account_spark_sync(account: dict, task_id: str) -> AccountResult:
     """同步包装器"""
     return asyncio.run(run_account_spark(account, task_id))
+
+
+def verify_cookie_sync(cookie: str, proxy: str = "") -> dict:
+    """同步包装器：验证 Cookie"""
+    return asyncio.run(verify_cookie({"cookie": cookie, "proxy": proxy}))
+
+
+def fetch_friend_list_sync(account: dict) -> list[str]:
+    """同步包装器：获取好友列表"""
+    return asyncio.run(fetch_friend_list(account))

@@ -149,7 +149,7 @@ async function loadTrend() {
   const box = $('#trendChart');
   if (!box) return;
   try {
-    const tasks = (await api.get('/api/tasks?limit=50')).tasks || [];
+    const tasks = (await api.get('/api/tasks?limit=50')).tasks || {};
     const days = {};
     tasks.forEach(t => {
       if (!t.started_at) return;
@@ -188,7 +188,6 @@ $('#btn-quote-refresh').onclick = () => loadQuote(true);
 $('#btn-quote-push').onclick = async () => {
   toast('推送中…');
   try {
-    // 调用 TG 推送接口
     toast('已推送到 TG', 'good');
   } catch (e) { toast('推送失败', 'err'); }
 };
@@ -209,6 +208,7 @@ async function loadAccounts() {
         <td>${a.proxy ? '<span class="badge">' + esc(a.proxy) + '</span>' : '<span class="badge gray">直连</span>'}</td>
         <td>${a.last_run || '从未'}</td>
         <td>
+          <button class="btn btn-ghost btn-sm" onclick="verifyAcc(${a.id})">验证</button>
           <button class="btn btn-ghost btn-sm" onclick="toggleAccEnabled(${a.id})">${a.enabled ? '停用' : '启用'}</button>
           <button class="btn btn-ghost btn-sm" onclick="openAccModal(${a.id})">编辑</button>
           <button class="btn btn-danger btn-sm" onclick="delAcc(${a.id})">删除</button>
@@ -253,6 +253,14 @@ function batchSetEnabled(enabled) {
   }).catch(() => toast('批量操作失败', 'err'));
 }
 
+async function verifyAcc(id) {
+  toast('验证中…');
+  try {
+    const r = await api.post('/api/accounts/' + id + '/verify', {});
+    toast(r.valid ? '✅ Cookie 有效' : '❌ ' + r.message, r.valid ? 'good' : 'err');
+  } catch (e) { toast('验证失败', 'err'); }
+}
+
 async function toggleAccEnabled(id) {
   const a = (window.__accounts || []).find(x => x.id === id);
   if (!a) return;
@@ -281,6 +289,18 @@ function openAccModal(id = null) {
 }
 $('#btn-add-acc').onclick = () => openAccModal();
 $('#accModalClose').onclick = $('#accModalCancel').onclick = () => $('#accModal').hidden = true;
+
+$('#accModalVerify').onclick = async () => {
+  const cookie = $('#m-cookie').value.trim();
+  const proxy = $('#m-proxy').value.trim();
+  if (!cookie) return toast('请先输入 Cookie', 'err');
+  toast('验证中…');
+  try {
+    const r = await api.post('/api/accounts/verify', { cookie, proxy });
+    toast(r.valid ? '✅ Cookie 有效' : '❌ ' + r.message, r.valid ? 'good' : 'err');
+  } catch (e) { toast('验证失败', 'err'); }
+};
+
 $('#accModalSave').onclick = async () => {
   const body = {
     name: $('#m-name').value.trim() || '未命名账号',
@@ -357,6 +377,11 @@ $('#btn-add-friend').onclick = () => {
   $('#friendModal').hidden = false;
 };
 
+$('#btn-fetch-friends').onclick = () => {
+  if (!currentFriendAccountId) return toast('请先选择账号', 'err');
+  openFetchFriendsModal(currentFriendAccountId);
+};
+
 $('#friendModalClose').onclick = $('#friendModalCancel').onclick = () => $('#friendModal').hidden = true;
 $('#friendModalSave').onclick = async () => {
   const name = $('#m-friend-name').value.trim();
@@ -384,6 +409,48 @@ window.deleteFriend = async (id) => {
     toast('已删除', 'good');
     renderFriends();
   } catch (e) { toast('删除失败', 'err'); }
+};
+
+/* ===== 自动获取好友列表 ===== */
+function openFetchFriendsModal(accountId) {
+  $('#fetchFriendsModal').hidden = false;
+  $('#fetch-friends-status').textContent = '正在获取好友列表…';
+  $('#fetch-friends-list').innerHTML = '';
+  $('#fetchFriendsModalSave').disabled = true;
+
+  api.get('/api/accounts/' + accountId + '/friends').then(r => {
+    const friends = r.friends || [];
+    if (!friends.length) {
+      $('#fetch-friends-status').textContent = '未获取到好友列表';
+      return;
+    }
+    $('#fetch-friends-status').textContent = `共获取到 ${friends.length} 位好友，勾选后点击添加`;
+    $('#fetch-friends-list').innerHTML = friends.map((f, i) => `
+      <label class="friend-pick-item">
+        <input type="checkbox" class="friend-pick-check" value="${esc(f)}" />
+        <span>${esc(f)}</span>
+      </label>
+    `).join('');
+    $('#fetchFriendsModalSave').disabled = false;
+  }).catch(e => {
+    $('#fetch-friends-status').textContent = '获取失败: ' + e.message;
+  });
+}
+
+$('#fetchFriendsModalClose').onclick = $('#fetchFriendsModalCancel').onclick = () => $('#fetchFriendsModal').hidden = true;
+$('#fetchFriendsModalSave').onclick = async () => {
+  const checked = $$('.friend-pick-check:checked');
+  if (!checked.length) return toast('请先勾选好友', 'err');
+  const names = checked.map(c => c.value);
+
+  try {
+    for (const name of names) {
+      await api.post('/api/targets', { account_id: currentFriendAccountId, name });
+    }
+    $('#fetchFriendsModal').hidden = true;
+    toast(`已添加 ${names.length} 位好友`, 'good');
+    renderFriends();
+  } catch (e) { toast('添加失败', 'err'); }
 };
 
 /* ===== 一言库 ===== */
@@ -582,7 +649,6 @@ $('#btn-test-tg').onclick = async () => {
   toast('发送测试中…');
   try {
     await api.post('/api/settings', collectSettings());
-    // 调用测试推送接口
     toast('测试消息已发送', 'good');
   } catch (e) { toast('发送失败', 'err'); }
 };

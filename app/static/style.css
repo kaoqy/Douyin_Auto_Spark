@@ -348,6 +348,13 @@ input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px;cursor:
 
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 
+/* ===== 好友选择列表 ===== */
+.friend-pick-list{display:flex;flex-direction:column;gap:6px;max-height:300px;overflow-y:auto;margin-top:12px}
+.friend-pick-item{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;background:var(--surface-2);border:1px solid var(--line);cursor:pointer;transition:background 0.15s}
+.friend-pick-item:hover{background:var(--line)}
+.friend-pick-item input[type=checkbox]{width:16px;height:16px;accent-color:var(--accent)}
+.friend-pick-item span{flex:1;font-size:13px}
+
 /* ===== 扫码登录 ===== */
 .qr-body{text-align:center}
 .qr-tip{max-width:390px;color:var(--muted);font-size:13px;margin:0 auto 16px;line-height:1.7}
