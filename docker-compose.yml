@@ -12,7 +12,7 @@ services:
     container_name: douyin-auto-spark
     restart: unless-stopped
     ports:
-      - "${DAS_PORT:-8000}:8000"
+      - "${DAS_PORT:-8001}:8000"
     environment:
       - TZ=Asia/Shanghai
       - APP_HOST=0.0.0.0

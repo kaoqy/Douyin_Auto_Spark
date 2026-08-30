@@ -1,16 +1,21 @@
-// 抖音续火花管理面板 - 前端逻辑
+/* ===== 抖音续火花管理面板 - 前端逻辑 ===== */
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-// ===== API =====
+function handleResp(r) {
+  if (r.status === 401) { location.href = '/login.html'; throw new Error('未登录'); }
+  if (!r.ok) throw new Error('请求失败 ' + r.status);
+  return r;
+}
+
 const api = {
-  get: (p) => fetch(p).then(r => r.json()),
-  post: (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).then(r => r.json()),
-  put: (p, b) => fetch(p, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => r.json()),
-  del: (p) => fetch(p, { method: 'DELETE' }).then(r => r.json()),
+  get: (p) => fetch(p).then(r => handleResp(r)).then(r => r.json()),
+  post: (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).then(r => handleResp(r)).then(r => r.json()),
+  put: (p, b) => fetch(p, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => handleResp(r)).then(r => r.json()),
+  del: (p) => fetch(p, { method: 'DELETE' }).then(r => handleResp(r)).then(r => r.json()),
 };
 
-// ===== Toast =====
+/* ===== Toast ===== */
 let toastTimer;
 function toast(msg, type = '') {
   const t = $('#toast');
@@ -20,7 +25,7 @@ function toast(msg, type = '') {
   toastTimer = setTimeout(() => t.className = 'toast', 2600);
 }
 
-// ===== 工具 =====
+/* ===== 工具 ===== */
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 function timeAgo(t) {
   if (!t) return '从未';
@@ -32,123 +37,35 @@ function timeAgo(t) {
   return t.slice(5, 16);
 }
 
-// ===== 主题 =====
-const themeToggle = $('#theme-toggle');
-function setTheme(t) {
+/* ===== 主题 ===== */
+const themeSel = $('#theme');
+themeSel.value = document.documentElement.dataset.theme || 'system';
+themeSel.onchange = () => {
+  const t = themeSel.value;
   document.documentElement.dataset.theme = t;
-  themeToggle.textContent = t === 'dark' ? '🌙' : '☀️';
   try { localStorage.setItem('das-theme', t); } catch (e) { }
-}
-themeToggle.onclick = () => {
-  const cur = document.documentElement.dataset.theme || 'dark';
-  setTheme(cur === 'dark' ? 'light' : 'dark');
-};
-try {
-  const saved = localStorage.getItem('das-theme');
-  if (saved) setTheme(saved);
-} catch (e) { }
-
-// ===== 登录 =====
-$('#login-form').onsubmit = async (e) => {
-  e.preventDefault();
-  const pwd = $('#password').value;
-  if (!pwd) return $('#login-error').textContent = '请输入密码';
-  try {
-    const r = await api.post('/api/auth/login', { username: 'admin', password: pwd });
-    if (r.token) {
-      $('#gate').hidden = true;
-      $('#app').hidden = false;
-      initApp();
-    }
-  } catch (err) {
-    $('#login-error').textContent = err.message || '登录失败';
-  }
 };
 
-// ===== 初始化 =====
-async function initApp() {
-  // 检查是否需要初始化
-  const needsInit = await api.get('/api/auth/needs-init');
-  if (needsInit.needs_init) {
-    $('#gate').hidden = false;
-    $('#app').hidden = true;
-    $('.gate-card').innerHTML = `
-      <div class="brand-mark">🔥</div>
-      <p class="eyebrow">首次使用</p>
-      <h1>创建管理员</h1>
-      <p class="gate-hint">设置密码开始使用</p>
-      <label class="field">
-        <span>管理员用户名</span>
-        <input id="init-username" type="text" value="admin" />
-      </label>
-      <label class="field">
-        <span>密码</span>
-        <input id="init-password" type="password" placeholder="至少 6 位" />
-      </label>
-      <label class="field">
-        <span>确认密码</span>
-        <input id="init-password2" type="password" placeholder="再次输入" />
-      </label>
-      <button class="primary-button full" onclick="doInit()">创建管理员</button>
-      <p id="login-error" class="gate-error"></p>
-    `;
-    return;
-  }
+/* ===== 导航 ===== */
+const VIEW_TITLES = { dashboard: '仪表盘', accounts: '账号管理', friends: '好友管理', yiyan: '一言库', logs: '续火日志', settings: '设置' };
+$$('.nav-item').forEach(btn => {
+  btn.onclick = () => {
+    $$('.nav-item').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    $$('.view').forEach(v => v.hidden = true);
+    $('#view-' + btn.dataset.view).hidden = false;
+    $('#view-title').textContent = VIEW_TITLES[btn.dataset.view];
+    if (btn.dataset.view === 'dashboard') loadDashboard();
+    if (btn.dataset.view === 'accounts') loadAccounts();
+    if (btn.dataset.view === 'friends') loadFriends();
+    if (btn.dataset.view === 'yiyan') loadYiyan();
+    if (btn.dataset.view === 'logs') loadLogs();
+    if (btn.dataset.view === 'settings') loadSettings();
+  };
+});
 
-  // 检查登录状态
-  try {
-    await api.get('/api/auth/me');
-    $('#gate').hidden = true;
-    $('#app').hidden = false;
-  } catch {
-    $('#gate').hidden = false;
-    $('#app').hidden = true;
-    return;
-  }
-
-  loadOverview();
-  initNav();
-}
-
-window.doInit = async () => {
-  const username = $('#init-username').value.trim();
-  const password = $('#init-password').value;
-  const password2 = $('#init-password2').value;
-  if (!username) return $('#login-error').textContent = '请输入用户名';
-  if (password.length < 6) return $('#login-error').textContent = '密码至少 6 位';
-  if (password !== password2) return $('#login-error').textContent = '两次密码不一致';
-  try {
-    await api.post('/api/auth/init', { username, password });
-    $('#gate').hidden = true;
-    $('#app').hidden = false;
-    initApp();
-  } catch (err) {
-    $('#login-error').textContent = err.message;
-  }
-};
-
-// ===== 导航 =====
-function initNav() {
-  $$('.nav-item').forEach(btn => {
-    btn.onclick = () => {
-      $$('.nav-item').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      $$('.tab-panel').forEach(p => p.classList.remove('active'));
-      const tab = btn.dataset.tab;
-      $(`[data-panel="${tab}"]`).classList.add('active');
-      if (tab === 'overview') loadOverview();
-      if (tab === 'accounts') loadAccounts();
-      if (tab === 'friends') loadFriends();
-      if (tab === 'yiyan') loadYiyan();
-      if (tab === 'config') loadConfig();
-      if (tab === 'notify') loadNotify();
-      if (tab === 'logs') loadLogs();
-    };
-  });
-}
-
-// ===== 总览 =====
-async function loadOverview() {
+/* ===== 仪表盘 ===== */
+async function loadDashboard() {
   try {
     const [accountsRes, targetsRes, tasksRes, scheduleRes] = await Promise.all([
       api.get('/api/accounts'),
@@ -161,222 +78,235 @@ async function loadOverview() {
     const tasks = tasksRes.tasks || [];
     const schedule = scheduleRes;
 
-    // 统计
     const enabledAcc = accounts.filter(a => a.enabled);
     const enabledTargets = targets.filter(t => t.enabled);
-    $('#ov-accounts').textContent = enabledAcc.length;
-    $('#ov-accounts-sub').textContent = `${enabledAcc.length} / ${accounts.length} 启用`;
-    $('#ov-targets').textContent = enabledTargets.length;
-    $('#ov-targets-sub').textContent = `${enabledTargets.length} / ${targets.length} 启用`;
+    const okAcc = accounts.filter(a => a.last_status === 'success').length;
 
-    // 定时
+    $('#statGrid').innerHTML = [
+      card('账号总数', accounts.length, 'acc', '个'),
+      card('启用中', enabledAcc.length, '', '个'),
+      card('续火正常', okAcc, 'green', '个'),
+      card('续火好友', enabledTargets.length, 'green', '个'),
+      card('今日成功', tasks.filter(t => t.status === 'success' && t.started_at && t.startsWith(new Date().toISOString().slice(0, 10))).length, '', '次'),
+      card('今日失败', tasks.filter(t => (t.status === 'failed' || t.status === 'partial') && t.started_at && t.startsWith(new Date().toISOString().slice(0, 10))).length, '', '次'),
+    ].join('');
+
+    // 下次定时
+    const strip = $('#schedStrip');
     if (schedule.enabled && schedule.next_run) {
-      $('#ov-cron').textContent = schedule.cron;
-      $('#ov-cron-sub').textContent = schedule.next_run;
+      strip.hidden = false;
+      $('#schedText').textContent = `下次定时续火：${schedule.next_run}（cron ${schedule.cron}）`;
     } else {
-      $('#ov-cron').textContent = '关闭';
-      $('#ov-cron-sub').textContent = '定时任务未启用';
+      strip.hidden = false;
+      $('#schedText').textContent = '定时续火已关闭（可到设置里开启）';
     }
 
-    // 上次运行
-    const lastTask = tasks.find(t => t.status !== 'running');
-    if (lastTask) {
-      $('#ov-last').textContent = timeAgo(lastTask.started_at);
-      $('#ov-last-sub').textContent = lastTask.status === 'success' ? '✅ 成功' : '❌ ' + lastTask.status;
-    }
-
-    // 健康状态
-    const healthRing = $('#ov-health-ring');
-    const healthText = $('#ov-health-text');
-    if (enabledAcc.length > 0 && enabledTargets.length > 0) {
-      healthRing.dataset.state = 'ok';
-      healthText.textContent = '✓';
-    } else {
-      healthRing.dataset.state = 'error';
-      healthText.textContent = '!';
-    }
-
-    // 标签
-    $('#ov-account-tag').textContent = `账号 ${enabledAcc.length}`;
-    $('#ov-target-tag').textContent = `好友 ${enabledTargets.length}`;
-    $('#ov-notify-tag').textContent = '通知 TG';
-
-    // 运行脉搏
-    renderPulse(tasks.slice(0, 7));
-
-    // 每日一言
+    // 趋势
+    loadTrend(tasks);
+    // 一言
     loadQuote();
-
-    // 导航计数
-    $('#nav-account-count').textContent = accounts.length;
-    $('#nav-friend-count').textContent = targets.length;
-
-    // 健康点
-    $('#dot-health').style.background = 'var(--success)';
-    $('#stat-health').textContent = '正常';
-    $('#stat-last').textContent = lastTask ? timeAgo(lastTask.started_at) : '上次 —';
-    $('#cron-spec').textContent = schedule.enabled ? schedule.cron : '—';
-
-  } catch (e) {
-    toast('加载总览失败', 'err');
-  }
+    // 最近任务
+    renderRecentTasks(tasks.slice(0, 6));
+    // 账号状态
+    renderDashAccounts(accounts);
+  } catch (e) { toast('加载仪表盘失败', 'err'); }
 }
 
-function renderPulse(tasks) {
-  const box = $('#run-pulse');
-  if (!tasks.length) {
-    box.innerHTML = '<div style="color:var(--muted);font-size:12px">暂无运行记录</div>';
-    return;
-  }
-  box.innerHTML = tasks.map(t => {
-    const h = t.status === 'success' ? 100 : t.status === 'partial' ? 60 : 30;
-    const cls = t.status === 'success' ? 'ok' : 'err';
-    return `<div class="pulse-bar ${cls}" style="height:${h}%" title="${t.status} ${t.started_at || ''}"></div>`;
-  }).join('');
+function card(lbl, num, cls, suffix = '') {
+  return `<div class="stat ${cls}"><div class="num">${num}<span style="font-size:14px">${suffix}</span></div><div class="lbl">${lbl}</div></div>`;
+}
 
-  // 成功率
-  const ok = tasks.filter(t => t.status === 'success').length;
-  $('#ov-success-rate').textContent = Math.round(ok / tasks.length * 100) + '%';
+function renderRecentTasks(tasks) {
+  const tb = $('#recentTasks tbody');
+  tb.innerHTML = tasks.length ? tasks.map(t => `
+    <tr>
+      <td><code>${t.task_id}</code></td>
+      <td>${t.trigger_type === 'schedule' ? '⏰ 定时' : '👆 手动'}</td>
+      <td>${statusBadge(t.status)}</td>
+      <td>${t.started_at || ''}</td>
+      <td>${t.finished_at || '—'}</td>
+    </tr>`).join('') : '<tr><td colspan="5" style="color:var(--muted)">暂无任务记录</td></tr>';
+}
 
-  // 连续成功
-  let streak = 0;
-  for (const t of tasks) {
-    if (t.status === 'success') streak++;
-    else break;
-  }
-  $('#ov-streak').textContent = streak;
+function renderDashAccounts(accounts) {
+  const tb = $('#dashAccounts tbody');
+  tb.innerHTML = accounts.length ? accounts.map(a => `
+    <tr>
+      <td>${esc(a.name)}</td>
+      <td>${statusBadge(a.last_status)}</td>
+      <td>${a.last_run || '从未'}</td>
+      <td style="white-space:normal;color:var(--muted)">${a.last_message || ''}</td>
+    </tr>`).join('') : '<tr><td colspan="4" style="color:var(--muted)">暂无账号</td></tr>';
+}
+
+function statusBadge(s) {
+  const map = { success: ['ok', '✅'], partial: ['warn', '⚠️'], failed: ['bad', '❌'], running: ['acc', '🔄'], unknown: ['gray', '未知'] };
+  const [cls, lab] = map[s] || map.unknown;
+  return `<span class="badge ${cls}">${lab} ${s === 'success' ? '成功' : s === 'partial' ? '部分' : s === 'failed' ? '失败' : s === 'running' ? '运行中' : '未知'}</span>`;
+}
+
+async function loadTrend() {
+  const box = $('#trendChart');
+  if (!box) return;
+  try {
+    const tasks = (await api.get('/api/tasks?limit=50')).tasks || [];
+    const days = {};
+    tasks.forEach(t => {
+      if (!t.started_at) return;
+      const day = t.started_at.slice(0, 10);
+      if (!days[day]) days[day] = { success: 0, fail: 0 };
+      if (t.status === 'success') days[day].success++;
+      else if (t.status === 'failed' || t.status === 'partial') days[day].fail++;
+    });
+    const labels = Object.keys(days).sort().slice(-7);
+    const max = Math.max(1, ...labels.map(d => days[d].success + days[d].fail));
+    box.innerHTML = labels.map(d => {
+      const totalH = Math.round((days[d].success + days[d].fail) / max * 100);
+      const okH = (days[d].success + days[d].fail) ? Math.round(days[d].success / (days[d].success + days[d].fail) * totalH) : 0;
+      const failH = Math.max(0, totalH - okH);
+      return `<div class="trend-col" title="${d}：成功 ${days[d].success}，失败 ${days[d].fail}">
+        <div class="trend-bars"><i class="tb-fail" style="height:${failH}%"></i><i class="tb-ok" style="height:${okH}%"></i></div>
+        <span class="trend-lbl">${d.slice(5)}</span>
+      </div>`;
+    }).join('');
+    const sum = labels.reduce((a, d) => a + days[d].success, 0);
+    $('#trendHint').textContent = `近 ${labels.length} 天成功 ${sum} 次`;
+  } catch (e) { box.innerHTML = '<div class="hint">趋势加载失败</div>'; }
 }
 
 async function loadQuote() {
+  const box = $('#quoteBox');
+  if (!box) return;
   try {
     const q = await api.get('/api/yiyan/random');
-    if (q.yiyan) {
-      $('#quote-box').textContent = q.yiyan.hitokoto;
-      $('#quote-from').textContent = q.yiyan.source ? '——「' + q.yiyan.source + '」' : '';
-    } else {
-      $('#quote-box').textContent = '暂无一言，请到「一言」页添加';
-      $('#quote-from').textContent = '';
-    }
-  } catch (e) {
-    $('#quote-box').textContent = '加载失败';
-  }
+    box.textContent = q.yiyan ? q.yiyan.hitokoto : '暂无一言';
+    $('#quoteFrom').textContent = q.yiyan && q.yiyan.source ? '——「' + q.yiyan.source + '」' : '';
+  } catch (e) { box.textContent = '每日一言加载失败'; }
 }
 
-$('#btn-quote-refresh').onclick = () => loadQuote();
+$('#btn-quote-refresh').onclick = () => loadQuote(true);
 $('#btn-quote-push').onclick = async () => {
   toast('推送中…');
   try {
-    // 这里调用 TG 推送接口
+    // 调用 TG 推送接口
     toast('已推送到 TG', 'good');
-  } catch (e) {
-    toast('推送失败', 'err');
-  }
+  } catch (e) { toast('推送失败', 'err'); }
 };
 
-// ===== 账号管理 =====
+/* ===== 账号管理 ===== */
+let editingAccId = null;
 async function loadAccounts() {
   try {
     const data = await api.get('/api/accounts');
     const accounts = data.accounts || [];
-    const box = $('#account-list');
-    $('#account-empty').hidden = accounts.length > 0;
-
-    box.innerHTML = accounts.map(a => `
-      <div class="account-item">
-        <div class="account-info">
-          <div class="account-name">${esc(a.name)}</div>
-          <div class="account-meta">
-            ${a.proxy ? '🌐 ' + esc(a.proxy) : '直连'}
-            · ${a.last_run ? '上次 ' + timeAgo(a.last_run) : '从未运行'}
-            ${a.last_status ? ' · ' + a.last_status : ''}
-          </div>
-        </div>
-        <div class="account-actions">
-          <span class="badge ${a.enabled ? 'ok' : 'gray'}">${a.enabled ? '启用' : '停用'}</span>
-          <button class="ghost-button btn-sm" onclick="toggleAccount(${a.id}, ${!a.enabled})">${a.enabled ? '停用' : '启用'}</button>
-          <button class="ghost-button btn-sm" onclick="editAccount(${a.id})">编辑</button>
-          <button class="ghost-button btn-sm danger" onclick="deleteAccount(${a.id})">删除</button>
-        </div>
-      </div>
-    `).join('');
-  } catch (e) {
-    toast('加载账号失败', 'err');
-  }
+    window.__accounts = accounts;
+    const tb = $('#accTable tbody');
+    tb.innerHTML = accounts.length ? accounts.map(a => `
+      <tr data-id="${a.id}">
+        <td><input type="checkbox" class="acc-check" data-id="${a.id}" /></td>
+        <td>${esc(a.name)}</td>
+        <td>${a.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge gray">停用</span>'} · ${statusBadge(a.last_status)}</td>
+        <td>${a.proxy ? '<span class="badge">' + esc(a.proxy) + '</span>' : '<span class="badge gray">直连</span>'}</td>
+        <td>${a.last_run || '从未'}</td>
+        <td>
+          <button class="btn btn-ghost btn-sm" onclick="toggleAccEnabled(${a.id})">${a.enabled ? '停用' : '启用'}</button>
+          <button class="btn btn-ghost btn-sm" onclick="openAccModal(${a.id})">编辑</button>
+          <button class="btn btn-danger btn-sm" onclick="delAcc(${a.id})">删除</button>
+        </td>
+      </tr>`).join('') : '<tr><td colspan="6" style="color:var(--muted)">暂无账号</td></tr>';
+    $('#accCheckAll').checked = false;
+    updateSelCount();
+    $('#btn-spark-selected').disabled = true;
+  } catch (e) { toast('加载账号失败', 'err'); }
 }
 
-$('#btn-add-account').onclick = () => {
-  $('#account-modal-title').textContent = '添加账号';
+function getSelectedIds() { return Array.from(document.querySelectorAll('.acc-check:checked')).map(c => +c.dataset.id); }
+function updateSelCount() {
+  const n = getSelectedIds().length;
+  $('#batchBar').hidden = n === 0;
+  $('#selCount').textContent = n;
+  $('#btn-spark-selected').disabled = n === 0;
+  const cbs = document.querySelectorAll('.acc-check');
+  if (cbs.length) $('#accCheckAll').checked = cbs.length === Array.from(cbs).filter(c => c.checked).length;
+}
+$('#accCheckAll').addEventListener('change', e => { document.querySelectorAll('.acc-check').forEach(c => { if (!c.disabled) c.checked = e.target.checked; }); updateSelCount(); });
+document.addEventListener('change', e => { if (e.target.classList && e.target.classList.contains('acc-check')) updateSelCount(); });
+$('#btn-sel-clear').onclick = () => { document.querySelectorAll('.acc-check').forEach(c => c.checked = false); updateSelCount(); };
+$('#btn-sel-enable').onclick = () => batchSetEnabled(true);
+$('#btn-sel-disable').onclick = () => batchSetEnabled(false);
+$('#btn-spark-selected').onclick = async () => {
+  const ids = getSelectedIds();
+  if (!ids.length) return toast('请先勾选账号', 'err');
+  try {
+    await api.post('/api/tasks/run', { account_ids: ids });
+    toast('已启动续火', 'good');
+    loadDashboard();
+  } catch (e) { toast('启动失败', 'err'); }
+};
+
+function batchSetEnabled(enabled) {
+  const ids = getSelectedIds();
+  if (!ids.length) return;
+  Promise.all(ids.map(id => api.put('/api/accounts/' + id, { enabled }))).then(() => {
+    toast((enabled ? '已启用' : '已停用') + ' ' + ids.length + ' 个账号', 'good');
+    loadAccounts();
+  }).catch(() => toast('批量操作失败', 'err'));
+}
+
+async function toggleAccEnabled(id) {
+  const a = (window.__accounts || []).find(x => x.id === id);
+  if (!a) return;
+  try {
+    await api.put('/api/accounts/' + id, { enabled: !a.enabled });
+    toast(a.enabled ? '已停用' : '已启用', 'good');
+    loadAccounts();
+  } catch (e) { toast('操作失败', 'err'); }
+}
+
+function openAccModal(id = null) {
+  editingAccId = id;
+  $('#accModalTitle').textContent = id ? '编辑账号' : '添加账号';
   $('#m-name').value = '';
   $('#m-cookie').value = '';
   $('#m-proxy').value = '';
   $('#m-enabled').checked = true;
-  editingAccountId = null;
-  $('#account-modal').hidden = false;
-};
-
-$('#account-modal-close').onclick = $('#account-modal-cancel').onclick = () => $('#account-modal').hidden = true;
-$('#account-modal-save').onclick = async () => {
+  if (id) {
+    api.get('/api/accounts/' + id).then(a => {
+      $('#m-name').value = a.name;
+      $('#m-proxy').value = a.proxy || '';
+      $('#m-enabled').checked = !!a.enabled;
+    });
+  }
+  $('#accModal').hidden = false;
+}
+$('#btn-add-acc').onclick = () => openAccModal();
+$('#accModalClose').onclick = $('#accModalCancel').onclick = () => $('#accModal').hidden = true;
+$('#accModalSave').onclick = async () => {
   const body = {
-    name: $('#m-name').value.trim() || '未命名',
+    name: $('#m-name').value.trim() || '未命名账号',
     cookie: $('#m-cookie').value.trim(),
     proxy: $('#m-proxy').value.trim(),
     enabled: $('#m-enabled').checked,
   };
-  if (!body.cookie) return toast('Cookie 不能为空', 'err');
+  if (!body.cookie && !editingAccId) return toast('Cookie 不能为空', 'err');
   try {
-    if (editingAccountId) {
-      await api.put('/api/accounts/' + editingAccountId, body);
-    } else {
-      await api.post('/api/accounts', body);
-    }
-    $('#account-modal').hidden = true;
+    if (editingAccId) await api.put('/api/accounts/' + editingAccId, body);
+    else await api.post('/api/accounts', body);
     toast('保存成功', 'good');
-    loadAccounts();
-  } catch (e) {
-    toast('保存失败: ' + e.message, 'err');
-  }
+    $('#accModal').hidden = true;
+    loadAccounts(); loadDashboard();
+  } catch (e) { toast('保存失败', 'err'); }
 };
 
-window.editAccount = async (id) => {
-  try {
-    const a = await api.get('/api/accounts/' + id);
-    $('#account-modal-title').textContent = '编辑账号';
-    $('#m-name').value = a.name;
-    $('#m-cookie').value = '';
-    $('#m-proxy').value = a.proxy || '';
-    $('#m-enabled').checked = !!a.enabled;
-    editingAccountId = id;
-    $('#account-modal').hidden = false;
-  } catch (e) {
-    toast('加载失败', 'err');
-  }
-};
-
-window.toggleAccount = async (id, enabled) => {
-  try {
-    await api.put('/api/accounts/' + id, { enabled });
-    toast(enabled ? '已启用' : '已停用', 'good');
-    loadAccounts();
-  } catch (e) {
-    toast('操作失败', 'err');
-  }
-};
-
-window.deleteAccount = async (id) => {
+async function delAcc(id) {
   if (!confirm('确定删除该账号及其所有好友？')) return;
-  try {
-    await api.del('/api/accounts/' + id);
-    toast('已删除', 'good');
-    loadAccounts();
-  } catch (e) {
-    toast('删除失败', 'err');
-  }
-};
+  try { await api.del('/api/accounts/' + id); toast('已删除', 'good'); loadAccounts(); loadDashboard(); }
+  catch (e) { toast('删除失败', 'err'); }
+}
 
-let editingAccountId = null;
-
-// ===== 好友管理 =====
+/* ===== 好友管理 ===== */
 let currentFriendAccountId = null;
+let editingFriendId = null;
 
 async function loadFriends() {
   try {
@@ -395,126 +325,106 @@ async function loadFriends() {
       select.value = currentFriendAccountId;
     }
     renderFriends();
-  } catch (e) {
-    toast('加载好友失败', 'err');
-  }
+  } catch (e) { toast('加载好友失败', 'err'); }
 }
 
 async function renderFriends() {
   if (!currentFriendAccountId) {
-    $('#friend-list').innerHTML = '';
-    $('#friend-empty').hidden = false;
-    $('#friend-empty').textContent = '请先选择账号';
+    $('#friendsTable tbody').innerHTML = '<tr><td colspan="4" style="color:var(--muted)">请先选择账号</td></tr>';
     return;
   }
   try {
     const data = await api.get('/api/targets?account_id=' + currentFriendAccountId);
     const targets = data.targets || [];
-    const box = $('#friend-list');
-    $('#friend-empty').hidden = targets.length > 0;
-
-    box.innerHTML = targets.map(t => `
-      <div class="friend-item">
-        <span class="friend-name">${esc(t.name)}</span>
-        <span class="friend-status">${t.last_run ? timeAgo(t.last_run) : '未运行'}</span>
-        <span class="badge ${t.enabled ? 'ok' : 'gray'}">${t.enabled ? '启用' : '停用'}</span>
-        <button class="ghost-button btn-sm" onclick="toggleTarget(${t.id}, ${!t.enabled})">${t.enabled ? '停用' : '启用'}</button>
-        <button class="ghost-button btn-sm danger" onclick="deleteTarget(${t.id})">删除</button>
-      </div>
-    `).join('');
-  } catch (e) {
-    toast('加载失败', 'err');
-  }
+    const tb = $('#friendsTable tbody');
+    tb.innerHTML = targets.length ? targets.map(t => `
+      <tr>
+        <td>${esc(t.name)}</td>
+        <td>${t.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge gray">停用</span>'}</td>
+        <td>${t.last_run || '未运行'}</td>
+        <td>
+          <button class="btn btn-ghost btn-sm" onclick="toggleFriend(${t.id}, ${!t.enabled})">${t.enabled ? '停用' : '启用'}</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteFriend(${t.id})">删除</button>
+        </td>
+      </tr>`).join('') : '<tr><td colspan="4" style="color:var(--muted)">暂无好友</td></tr>';
+  } catch (e) { toast('加载失败', 'err'); }
 }
 
-$('#friend-add').onclick = () => {
+$('#btn-add-friend').onclick = () => {
   if (!currentFriendAccountId) return toast('请先选择账号', 'err');
   $('#m-friend-name').value = '';
   editingFriendId = null;
-  $('#friend-modal').hidden = false;
+  $('#friendModal').hidden = false;
 };
 
-$('#friend-modal-close').onclick = $('#friend-modal-cancel').onclick = () => $('#friend-modal').hidden = true;
-$('#friend-modal-save').onclick = async () => {
+$('#friendModalClose').onclick = $('#friendModalCancel').onclick = () => $('#friendModal').hidden = true;
+$('#friendModalSave').onclick = async () => {
   const name = $('#m-friend-name').value.trim();
   if (!name) return toast('请输入好友名称', 'err');
   try {
     await api.post('/api/targets', { account_id: currentFriendAccountId, name });
-    $('#friend-modal').hidden = true;
+    $('#friendModal').hidden = true;
     toast('添加成功', 'good');
     renderFriends();
-  } catch (e) {
-    toast('添加失败: ' + e.message, 'err');
-  }
+  } catch (e) { toast('添加失败', 'err'); }
 };
 
-window.toggleTarget = async (id, enabled) => {
+window.toggleFriend = async (id, enabled) => {
   try {
     await api.put('/api/targets/' + id, { enabled });
     toast(enabled ? '已启用' : '已停用', 'good');
     renderFriends();
-  } catch (e) {
-    toast('操作失败', 'err');
-  }
+  } catch (e) { toast('操作失败', 'err'); }
 };
 
-window.deleteTarget = async (id) => {
+window.deleteFriend = async (id) => {
   if (!confirm('确定删除该好友？')) return;
   try {
     await api.del('/api/targets/' + id);
     toast('已删除', 'good');
     renderFriends();
-  } catch (e) {
-    toast('删除失败', 'err');
-  }
+  } catch (e) { toast('删除失败', 'err'); }
 };
 
-let editingFriendId = null;
+/* ===== 一言库 ===== */
+let editingYiyanId = null;
 
-// ===== 一言库 =====
 async function loadYiyan() {
   try {
     const data = await api.get('/api/yiyan');
     const items = data.yiyan || [];
-    const box = $('#yiyan-list');
-    $('#yiyan-empty').hidden = items.length > 0;
-
-    box.innerHTML = items.map(y => `
-      <div class="yiyan-item">
-        <div class="yiyan-text">${esc(y.hitokoto)}</div>
-        <div class="yiyan-source">——「${esc(y.source || '未知')}」</div>
-        <div style="margin-top:8px;display:flex;gap:6px;">
-          <span class="badge ${y.enabled ? 'ok' : 'gray'}">${y.enabled ? '启用' : '停用'}</span>
-          <button class="ghost-button btn-sm" onclick="toggleYiyan(${y.id}, ${!y.enabled})">${y.enabled ? '停用' : '启用'}</button>
-          <button class="ghost-button btn-sm danger" onclick="deleteYiyan(${y.id})">删除</button>
-        </div>
-      </div>
-    `).join('');
-  } catch (e) {
-    toast('加载一言库失败', 'err');
-  }
+    const tb = $('#yiyanTable tbody');
+    tb.innerHTML = items.length ? items.map(y => `
+      <tr>
+        <td>${esc(y.hitokoto)}</td>
+        <td>${esc(y.source || '未知')}</td>
+        <td>${y.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge gray">停用</span>'}</td>
+        <td>
+          <button class="btn btn-ghost btn-sm" onclick="toggleYiyan(${y.id}, ${!y.enabled})">${y.enabled ? '停用' : '启用'}</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteYiyan(${y.id})">删除</button>
+        </td>
+      </tr>`).join('') : '<tr><td colspan="4" style="color:var(--muted)">一言库为空</td></tr>';
+  } catch (e) { toast('加载一言库失败', 'err'); }
 }
 
 $('#btn-add-yiyan').onclick = () => {
   $('#m-yiyan-text').value = '';
   $('#m-yiyan-source').value = '';
   editingYiyanId = null;
-  $('#yiyan-modal').hidden = false;
+  $('#yiyanModal').hidden = false;
 };
 
-$('#yiyan-modal-close').onclick = $('#yiyan-modal-cancel').onclick = () => $('#yiyan-modal').hidden = true;
-$('#yiyan-modal-save').onclick = async () => {
+$('#yiyanModalClose').onclick = $('#yiyanModalCancel').onclick = () => $('#yiyanModal').hidden = true;
+$('#yiyanModalSave').onclick = async () => {
   const hitokoto = $('#m-yiyan-text').value.trim();
   const source = $('#m-yiyan-source').value.trim();
   if (!hitokoto) return toast('内容不能为空', 'err');
   try {
     await api.post('/api/yiyan', { hitokoto, source });
-    $('#yiyan-modal').hidden = true;
+    $('#yiyanModal').hidden = true;
     toast('添加成功', 'good');
     loadYiyan();
-  } catch (e) {
-    toast('添加失败: ' + e.message, 'err');
-  }
+  } catch (e) { toast('添加失败', 'err'); }
 };
 
 $('#btn-import-yiyan').onclick = async () => {
@@ -522,24 +432,17 @@ $('#btn-import-yiyan').onclick = async () => {
     const r = await api.post('/api/yiyan/import', {});
     toast(`已导入 ${r.imported} 条一言`, 'good');
     loadYiyan();
-  } catch (e) {
-    toast('导入失败', 'err');
-  }
+  } catch (e) { toast('导入失败', 'err'); }
 };
 
 $('#btn-random-yiyan').onclick = async () => {
   try {
     const r = await api.get('/api/yiyan/random');
     if (r.yiyan) {
-      $('#random-yiyan-result').hidden = false;
-      $('#random-yiyan-result').innerHTML = `
-        <div class="text">${esc(r.yiyan.hitokoto)}</div>
-        <div class="from">——「${esc(r.yiyan.source || '未知')}」</div>
-      `;
+      $('#random-yiyan-result').style.display = 'block';
+      $('#random-yiyan-result').innerHTML = `<p style="font-size:1.1rem;margin:0">${esc(r.yiyan.hitokoto)}</p><p style="color:var(--muted);margin:4px 0 0">——「${esc(r.yiyan.source || '未知')}」</p>`;
     }
-  } catch (e) {
-    toast('加载失败', 'err');
-  }
+  } catch (e) { toast('加载失败', 'err'); }
 };
 
 window.toggleYiyan = async (id, enabled) => {
@@ -547,9 +450,7 @@ window.toggleYiyan = async (id, enabled) => {
     await api.put('/api/yiyan/' + id, { enabled });
     toast(enabled ? '已启用' : '已停用', 'good');
     loadYiyan();
-  } catch (e) {
-    toast('操作失败', 'err');
-  }
+  } catch (e) { toast('操作失败', 'err'); }
 };
 
 window.deleteYiyan = async (id) => {
@@ -558,195 +459,175 @@ window.deleteYiyan = async (id) => {
     await api.del('/api/yiyan/' + id);
     toast('已删除', 'good');
     loadYiyan();
-  } catch (e) {
-    toast('删除失败', 'err');
-  }
+  } catch (e) { toast('删除失败', 'err'); }
 };
 
-let editingYiyanId = null;
-
-// ===== 配置 =====
-async function loadConfig() {
+/* ===== 日志 ===== */
+async function loadLogs(reset = true) {
+  if (reset) $('#logList').innerHTML = '<div style="color:var(--muted);padding:16px">加载中…</div>';
   try {
-    const data = await api.get('/api/settings');
-    const s = data.settings || {};
-    $('[data-field="message_template"]').value = s.message_template || '';
-    $('[data-field="yiyan_include_source"]').value = s.yiyan_include_source || '1';
-    $('[data-field="log_retention_days"]').value = s.log_retention_days || '30';
-    $('#s-schedule-enabled').checked = (s.schedule_enabled || '1') === '1';
-    $('#s-schedule-cron').value = s.schedule_cron || '0 8 * * *';
-  } catch (e) {
-    toast('加载配置失败', 'err');
-  }
-}
-
-$('#save-config').onclick = async () => {
-  const body = {
-    message_template: $('[data-field="message_template"]').value,
-    yiyan_include_source: $('[data-field="yiyan_include_source"]').value,
-    log_retention_days: $('[data-field="log_retention_days"]').value,
-  };
-  try {
-    await api.put('/api/settings', body);
-    toast('配置已保存', 'good');
-  } catch (e) {
-    toast('保存失败', 'err');
-  }
-};
-
-$('#save-schedule').onclick = async () => {
-  const body = {
-    schedule_enabled: $('#s-schedule-enabled').checked ? '1' : '0',
-    schedule_cron: $('#s-schedule-cron').value.trim(),
-  };
-  try {
-    await api.put('/api/tasks/schedule', body);
-    toast('定时设置已保存', 'good');
-  } catch (e) {
-    toast('保存失败', 'err');
-  }
-};
-
-// ===== 通知 =====
-async function loadNotify() {
-  try {
-    const data = await api.get('/api/settings');
-    const s = data.settings || {};
-    $('#s-tg-enabled').checked = (s.tg_enabled || '0') === '1';
-    $('#s-tg-token').value = s.tg_bot_token || '';
-    $('#s-tg-chat-id').value = s.tg_user_id || '';
-    $('#s-tg-quote').checked = (s.tg_quote_enabled || '0') === '1';
-    $('#s-tg-only-error').checked = (s.tg_only_on_change || '0') === '1';
-    $('#s-tg-silent').checked = (s.tg_silent || '0') === '1';
-  } catch (e) {
-    toast('加载通知配置失败', 'err');
-  }
-}
-
-$('#save-notify').onclick = async () => {
-  const body = {
-    tg_enabled: $('#s-tg-enabled').checked ? '1' : '0',
-    tg_bot_token: $('#s-tg-token').value.trim(),
-    tg_user_id: $('#s-tg-chat-id').value.trim(),
-    tg_quote_enabled: $('#s-tg-quote').checked ? '1' : '0',
-    tg_only_on_change: $('#s-tg-only-error').checked ? '1' : '0',
-    tg_silent: $('#s-tg-silent').checked ? '1' : '0',
-  };
-  try {
-    await api.put('/api/settings', body);
-    toast('通知配置已保存', 'good');
-  } catch (e) {
-    toast('保存失败', 'err');
-  }
-};
-
-$('#test-notify').onclick = async () => {
-  toast('发送测试中…');
-  try {
-    await api.put('/api/settings', {
-      tg_enabled: $('#s-tg-enabled').checked ? '1' : '0',
-      tg_bot_token: $('#s-tg-token').value.trim(),
-      tg_user_id: $('#s-tg-chat-id').value.trim(),
-    });
-    // 这里调用测试推送接口
-    toast('测试消息已发送', 'good');
-  } catch (e) {
-    toast('发送失败', 'err');
-  }
-};
-
-// ===== 日志 =====
-async function loadLogs() {
-  try {
-    const status = $('#log-filter').value;
-    const kw = $('#log-search').value.trim().toLowerCase();
+    const status = $('#logFilter').value;
+    const kw = ($('#logSearch').value || '').trim().toLowerCase();
     const data = await api.get('/api/logs?limit=200' + (status ? '&status=' + status : ''));
     const logs = (data.logs || []).filter(l => {
       if (!kw) return true;
       return ((l.account_name || '') + ' ' + (l.message || '') + ' ' + (l.target_name || '')).toLowerCase().includes(kw);
     });
-
-    const box = $('#log-list');
-    $('#log-empty').hidden = logs.length > 0;
-
-    box.innerHTML = logs.map(l => {
+    const list = $('#logList');
+    const countBox = $('#logCount');
+    if (!logs.length) {
+      list.innerHTML = '<div style="color:var(--muted);padding:20px">暂无日志</div>';
+      countBox.textContent = '共 0 条';
+      return;
+    }
+    list.innerHTML = logs.map(l => {
+      const t = (l.created_at || '').slice(5, 16);
       const badge = l.status === 'success' ? '<span class="badge ok">成功</span>'
         : l.status === 'partial' ? '<span class="badge warn">部分</span>'
           : '<span class="badge bad">失败</span>';
-      return `<div class="log-item">
-        <span class="log-time">${(l.created_at || '').slice(5, 16)}</span>
-        <span class="log-name">${esc(l.account_name || '')}</span>
+      return `<div class="log-simple">
+        <span class="log-simple-time">${esc(t)}</span>
+        <span class="log-simple-name">${esc(l.account_name || '')}</span>
         ${l.target_name ? '<span style="color:var(--muted)">→ ' + esc(l.target_name) + '</span>' : ''}
         ${badge}
         <span class="log-msg">${esc(l.message || '')}</span>
       </div>`;
     }).join('');
-  } catch (e) {
-    toast('加载日志失败', 'err');
-  }
+    countBox.textContent = `共 ${logs.length} 条`;
+  } catch (e) { toast('加载日志失败', 'err'); }
 }
-
-$('#refresh-logs').onclick = loadLogs;
-$('#log-search').addEventListener('input', loadLogs);
-$('#log-filter').addEventListener('change', loadLogs);
-$('#clear-logs').onclick = async () => {
+$('#btn-refresh-logs').onclick = loadLogs;
+$('#logSearch').addEventListener('input', () => loadLogs(false));
+$('#logFilter').addEventListener('change', () => loadLogs(true));
+$('#btn-clear-logs').onclick = async () => {
   if (!confirm('确定清空全部日志？此操作不可恢复。')) return;
   try {
     await api.del('/api/logs');
-    toast('日志已清空', 'good');
-    loadLogs();
-  } catch (e) {
-    toast('清空失败', 'err');
-  }
+    toast('已清空日志', 'good');
+    loadLogs(); loadDashboard();
+  } catch (e) { toast('清空失败', 'err'); }
 };
 
-// ===== 立即续火 =====
-$('#run-now').onclick = async () => {
+/* ===== 设置 ===== */
+async function loadSettings() {
   try {
-    await api.post('/api/tasks/run', {});
-    $('#run-modal').hidden = false;
-    $('#run-bar').style.width = '0%';
-    $('#run-info').textContent = '正在启动…';
-    $('#run-lines').innerHTML = '';
-    pollRun();
-  } catch (e) {
-    toast('启动失败: ' + e.message, 'err');
-  }
+    const data = await api.get('/api/settings');
+    const s = data.settings || {};
+    $('#s-tg_enabled').checked = (s.tg_enabled || '0') === '1';
+    $('#s-tg_bot_token').value = s.tg_bot_token || '';
+    $('#s-tg_user_id').value = s.tg_user_id || '';
+    $('#s-tg_quote_enabled').checked = (s.tg_quote_enabled || '0') === '1';
+    $('#s-tg_only_on_change').checked = (s.tg_only_on_change || '0') === '1';
+    $('#s-tg_silent').checked = (s.tg_silent || '0') === '1';
+    $('#s-schedule_enabled').checked = (s.schedule_enabled || '1') === '1';
+    $('#s-schedule_cron').value = s.schedule_cron || '0 8 * * *';
+    $('#s-message_template').value = s.message_template || '';
+    $('#s-yiyan_include_source').value = s.yiyan_include_source || '1';
+    $('#s-log_retention_days').value = s.log_retention_days || '30';
+  } catch (e) { toast('加载设置失败', 'err'); }
+}
+
+function collectSettings() {
+  const val = (id, dflt = '') => { const el = $('#' + id); return el ? el.value : dflt; };
+  const chk = (id) => { const el = $('#' + id); return el && el.checked ? '1' : '0'; };
+  return {
+    tg_enabled: chk('s-tg_enabled'),
+    tg_bot_token: val('s-tg_bot_token').trim(),
+    tg_user_id: val('s-tg_user_id').trim(),
+    tg_quote_enabled: chk('s-tg_quote_enabled'),
+    tg_only_on_change: chk('s-tg_only_on_change'),
+    tg_silent: chk('s-tg_silent'),
+    schedule_enabled: chk('s-schedule_enabled'),
+    schedule_cron: val('s-schedule_cron').trim(),
+    message_template: val('s-message_template'),
+    yiyan_include_source: val('s-yiyan_include_source'),
+    log_retention_days: val('s-log_retention_days', '30'),
+  };
+}
+
+$('#btn-save-all').onclick = async () => {
+  const status = $('#saveStatus');
+  status.textContent = '保存中…'; status.className = 'save-status';
+  try {
+    await api.post('/api/settings', collectSettings());
+    status.textContent = '✅ 已保存'; status.className = 'save-status ok';
+    setTimeout(() => status.textContent = '', 2500);
+  } catch (e) { status.textContent = '保存失败'; status.className = 'save-status'; }
+};
+$('#btn-save-schedule').onclick = async () => {
+  try {
+    await api.put('/api/tasks/schedule', {
+      enabled: $('#s-schedule_enabled').checked,
+      cron: $('#s-schedule_cron').value.trim(),
+    });
+    toast('定时配置已保存', 'good');
+  } catch (e) { toast('保存失败', 'err'); }
+};
+$('#btn-save-template').onclick = async () => {
+  try {
+    await api.put('/api/settings', {
+      message_template: $('#s-message_template').value,
+      yiyan_include_source: $('#s-yiyan_include_source').value,
+    });
+    toast('模板已保存', 'good');
+  } catch (e) { toast('保存失败', 'err'); }
+};
+$('#btn-save-retention').onclick = async () => {
+  try {
+    await api.put('/api/settings', { log_retention_days: $('#s-log_retention_days').value });
+    toast('设置已保存', 'good');
+  } catch (e) { toast('保存失败', 'err'); }
+};
+$('#btn-test-tg').onclick = async () => {
+  toast('发送测试中…');
+  try {
+    await api.post('/api/settings', collectSettings());
+    // 调用测试推送接口
+    toast('测试消息已发送', 'good');
+  } catch (e) { toast('发送失败', 'err'); }
 };
 
-$('#run-modal-close').onclick = () => $('#run-modal').hidden = true;
+/* ===== 立即续火 + 运行状态轮询 ===== */
+$('#btn-run').onclick = async () => {
+  try {
+    $('#runModal').hidden = false;
+    $('#runBar').style.width = '0%';
+    $('#runInfo').textContent = '正在启动…';
+    $('#runLines').innerHTML = '';
+    await api.post('/api/tasks/run', {});
+    pollRun();
+  } catch (e) { toast('启动失败', 'err'); $('#runModal').hidden = true; }
+};
+$('#runModalClose').onclick = () => $('#runModal').hidden = true;
 
 let pollTimer;
 function pollRun() {
-  clearInterval(pollTimer);
+  clearTimeout(pollTimer);
   pollTimer = setInterval(async () => {
     try {
       const s = await api.get('/api/tasks/run');
       if (s.run && s.run.status === 'running') {
         const r = s.run;
-        $('#run-info').textContent = `账号 ${r.accounts_done || 0}/${r.accounts_total || 0}（${r.progress || 0}%）`;
-        $('#run-bar').style.width = (r.progress || 0) + '%';
+        $('#runInfo').textContent = `账号 ${r.accounts_done || 0}/${r.accounts_total || 0}（${r.progress || 0}%）· ${r.started_at}`;
+        $('#runBar').style.width = (r.progress || 0) + '%';
         addRunLine(`运行中… 已完成 ${r.accounts_done || 0}/${r.accounts_total || 0} 个账号`);
       } else {
         clearInterval(pollTimer);
-        $('#run-bar').style.width = '100%';
+        $('#runBar').style.width = '100%';
         const last = await api.get('/api/tasks');
         const lastTask = (last.tasks || [])[0];
         if (lastTask) {
-          $('#run-info').textContent = `✅ 完成（${lastTask.status}）`;
+          $('#runInfo').textContent = `✅ 完成（${lastTask.status}）`;
           addRunLine(`完成：${lastTask.message || ''}`);
         }
-        loadOverview();
-        loadLogs();
+        loadDashboard(); loadAccounts(); loadLogs();
       }
-    } catch (e) {
-      clearInterval(pollTimer);
-    }
+    } catch (e) { clearInterval(pollTimer); }
   }, 1500);
 }
 
 function addRunLine(txt) {
-  const box = $('#run-lines');
+  const box = $('#runLines');
   const div = document.createElement('div');
   div.className = 'ln';
   div.textContent = txt;
@@ -754,11 +635,49 @@ function addRunLine(txt) {
   box.scrollTop = box.scrollHeight;
 }
 
-// ===== 退出 =====
-$('#logout').onclick = async () => {
-  try { await api.post('/api/auth/logout', {}); } catch (e) { }
-  location.reload();
+/* ===== 版本 ===== */
+async function loadVersion() {
+  try {
+    const h = await api.get('/api/health');
+    const el = document.getElementById('app-version');
+    if (el && h && h.version) el.textContent = 'v' + h.version;
+  } catch (e) { }
+}
+
+/* ===== 健康检查 ===== */
+$('#btn-health').onclick = async () => {
+  try {
+    const h = await api.get('/api/health');
+    toast(`服务正常 · v${h.version} · 上次续火 ${h.time}`, 'good');
+  } catch (e) { toast('服务异常', 'err'); }
 };
 
-// ===== 启动 =====
-initApp();
+/* ===== 账户：当前用户 / 退出 / 改密 ===== */
+async function loadMe() {
+  try {
+    const me = await api.get('/api/auth/me');
+    $('#btn-user').textContent = '👤 ' + (me.user?.username || '');
+  } catch (e) { }
+}
+$('#btn-logout').onclick = async () => {
+  try { await api.post('/api/auth/logout', {}); } catch (e) { }
+  location.href = '/login.html';
+};
+$('#btn-change-pwd').onclick = async () => {
+  const oldP = $('#p-old').value, newP = $('#p-new').value;
+  const st = $('#pwd-status');
+  if (!oldP || !newP) { st.textContent = '请填写原密码和新密码'; return; }
+  if (newP.length < 6) { st.textContent = '新密码至少 6 位'; return; }
+  st.textContent = '提交中…';
+  try {
+    const r = await api.post('/api/auth/change-password', { old_password: oldP, new_password: newP });
+    st.textContent = '✅ ' + (r.message || '已修改');
+    setTimeout(() => location.href = '/login.html', 1200);
+  } catch (e) { st.textContent = e.message || '修改失败'; }
+};
+
+/* ===== 初始化 ===== */
+loadVersion();
+loadMe();
+loadDashboard();
+setInterval(() => { if (!$('#view-dashboard').hidden) loadDashboard(); }, 30000);

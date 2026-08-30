@@ -1,455 +1,309 @@
-<!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<!doctype html>
+<html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>抖音续火花管理面板</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=1.0.0" />
+  <script>!function(){try{const t=localStorage.getItem('das-theme')||'system';document.documentElement.dataset.theme=t}catch(e){}}()</script>
 </head>
 <body>
-  <div class="bg-orbs" aria-hidden="true">
-    <span class="orb orb-a"></span>
-    <span class="orb orb-b"></span>
-    <span class="orb orb-c"></span>
-  </div>
-
-  <!-- 登录门禁 -->
-  <div id="gate" class="gate">
-    <form id="login-form" class="gate-card glass">
-      <div class="brand-mark">🔥</div>
-      <p class="eyebrow">Douyin Auto Spark</p>
-      <h1>续火控制台</h1>
-      <p class="gate-hint">输入管理员密码进入管理界面</p>
-      <label class="field">
-        <span>访问密码</span>
-        <input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" />
-      </label>
-      <button type="submit" class="primary-button full">进入面板</button>
-      <p id="login-error" class="gate-error"></p>
-      <p class="gate-foot">抖音自动续火花 · 多账号管理</p>
-    </form>
-  </div>
-
-  <!-- 主界面 -->
-  <div id="app" class="app-shell" hidden>
-    <aside class="sidebar glass">
-      <div class="sidebar-brand">
-        <div class="brand-mark sm">🔥</div>
-        <div>
+  <div class="app">
+    <!-- 侧边栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">🔥</div>
+        <div class="brand-text">
           <strong>抖音续火花</strong>
           <span>管理面板</span>
         </div>
       </div>
-
-      <nav class="nav" id="main-nav">
-        <button type="button" class="nav-item active" data-tab="overview">
-          <span class="nav-ico">◈</span><span>总览</span>
+      <nav>
+        <button class="nav-item active" data-view="dashboard">
+          <span class="nav-ico">📊</span>仪表盘
         </button>
-        <button type="button" class="nav-item" data-tab="accounts">
-          <span class="nav-ico">👥</span><span>账号</span>
-          <em id="nav-account-count" class="nav-count">0</em>
+        <button class="nav-item" data-view="accounts">
+          <span class="nav-ico">👥</span>账号管理
         </button>
-        <button type="button" class="nav-item" data-tab="friends">
-          <span class="nav-ico">◎</span><span>好友</span>
-          <em id="nav-friend-count" class="nav-count">0</em>
+        <button class="nav-item" data-view="friends">
+          <span class="nav-ico">💬</span>好友管理
         </button>
-        <button type="button" class="nav-item" data-tab="yiyan">
-          <span class="nav-ico">📝</span><span>一言</span>
+        <button class="nav-item" data-view="yiyan">
+          <span class="nav-ico">📝</span>一言库
         </button>
-        <button type="button" class="nav-item" data-tab="config">
-          <span class="nav-ico">⚙</span><span>配置</span>
+        <button class="nav-item" data-view="logs">
+          <span class="nav-ico">📜</span>续火日志
         </button>
-        <button type="button" class="nav-item" data-tab="notify">
-          <span class="nav-ico">✉</span><span>通知</span>
-        </button>
-        <button type="button" class="nav-item" data-tab="logs">
-          <span class="nav-ico">☰</span><span>日志</span>
+        <button class="nav-item" data-view="settings">
+          <span class="nav-ico">⚙️</span>设置
         </button>
       </nav>
-
-      <div class="sidebar-foot">
-        <button id="run-now" class="primary-button full">▶ 立即续火</button>
-        <button id="logout" class="ghost-button full">退出登录</button>
+      <div class="side-foot">
+        <label class="theme-control">
+          外观
+          <select id="theme">
+            <option value="system">跟随系统</option>
+            <option value="light">白天</option>
+            <option value="dark">黑夜</option>
+          </select>
+        </label>
+        <div class="ver" id="app-version">…</div>
       </div>
     </aside>
 
-    <div class="main-wrap">
-      <header class="main-top">
-        <div>
-          <p class="eyebrow" id="page-kicker">Overview</p>
-          <h1 id="page-title">总览</h1>
-        </div>
-        <div class="top-meta">
-          <button class="theme-toggle" id="theme-toggle" title="切换主题">🌙</button>
-          <span class="meta-chip"><i id="dot-health" class="dot"></i><b id="stat-health">—</b></span>
-          <span class="meta-chip"><i id="dot-last" class="dot soft"></i><b id="stat-last">上次 —</b></span>
-          <span class="meta-chip mono" id="cron-spec">—</span>
+    <!-- 主内容 -->
+    <main class="main">
+      <header class="topbar">
+        <h1 id="view-title">仪表盘</h1>
+        <div class="topbar-actions">
+          <button class="btn btn-ghost" id="btn-health" title="服务状态">●</button>
+          <button class="btn btn-ghost" id="btn-user" title="账户">👤</button>
+          <button class="btn btn-primary" id="btn-run">▶ 立即续火</button>
         </div>
       </header>
 
-      <!-- ========== 总览 ========== -->
-      <section class="tab-panel active" data-panel="overview">
-        <div class="overview-grid">
-          <article class="glass card hero-banner span-all">
-            <div class="hero-banner-main">
-              <p class="eyebrow">Dashboard</p>
-              <h2 id="ov-greeting">续火控制台</h2>
-              <p class="card-desc" id="ov-desc">读取中…</p>
-              <div class="hero-tags">
-                <span class="tag" id="ov-account-tag">账号 —</span>
-                <span class="tag" id="ov-target-tag">好友 —</span>
-                <span class="tag" id="ov-notify-tag">通知 —</span>
-              </div>
-            </div>
-            <div class="hero-banner-side">
-              <div class="ring-wrap">
-                <div class="ring" id="ov-health-ring" data-state="unknown">
-                  <strong id="ov-health-text">—</strong>
-                </div>
-                <small class="ring-caption">系统状态</small>
-              </div>
-            </div>
-          </article>
-
-          <article class="glass card metric">
-            <div class="metric-top"><span class="metric-ico">👥</span><small>账号</small></div>
-            <strong id="ov-accounts">—</strong>
-            <p class="metric-sub" id="ov-accounts-sub">启用中</p>
-            <div class="meter"><i id="ov-accounts-meter"></i></div>
-          </article>
-
-          <article class="glass card metric">
-            <div class="metric-top"><span class="metric-ico">◎</span><small>续火好友</small></div>
-            <strong id="ov-targets">—</strong>
-            <p class="metric-sub" id="ov-targets-sub">已启用</p>
-            <div class="meter"><i id="ov-targets-meter"></i></div>
-          </article>
-
-          <article class="glass card metric">
-            <div class="metric-top"><span class="metric-ico">⏱</span><small>定时任务</small></div>
-            <strong id="ov-cron" class="mono">—</strong>
-            <p class="metric-sub" id="ov-cron-sub">下次执行</p>
-          </article>
-
-          <article class="glass card metric">
-            <div class="metric-top"><span class="metric-ico">✦</span><small>上次运行</small></div>
-            <strong id="ov-last">—</strong>
-            <p class="metric-sub" id="ov-last-sub">尚无记录</p>
-          </article>
-
-          <article class="glass card span-2">
-            <div class="card-head">
-              <div>
-                <p class="eyebrow">Pulse</p>
-                <h2>近 7 次运行</h2>
-              </div>
-              <div class="pulse-legend">
-                <span><i class="lg ok"></i>成功</span>
-                <span><i class="lg err"></i>失败</span>
-              </div>
-            </div>
-            <div id="run-pulse" class="run-pulse"></div>
-            <div class="pulse-stats">
-              <div><small>成功率</small><b id="ov-success-rate">—</b></div>
-              <div><small>连续成功</small><b id="ov-streak">—</b></div>
-            </div>
-          </article>
-
-          <article class="glass card quote-card">
-            <div class="card-head">
-              <div>
-                <p class="eyebrow">Daily</p>
-                <h2>每日一言</h2>
-              </div>
-              <button class="ghost-button btn-sm" id="btn-quote-refresh" title="换一句">🔄</button>
-            </div>
-            <blockquote class="quote" id="quote-box">载入中…</blockquote>
-            <div class="quote-from" id="quote-from"></div>
-            <div class="form-actions">
-              <button class="ghost-button btn-sm" id="btn-quote-push">📮 推送到 TG</button>
-            </div>
-          </article>
+      <!-- 仪表盘 -->
+      <section class="view" id="view-dashboard">
+        <div class="stat-grid" id="statGrid"></div>
+        <div class="sched-strip" id="schedStrip" hidden>
+          <span class="sched-icon">⏰</span>
+          <span class="sched-text" id="schedText">—</span>
+          <span class="sched-countdown" id="schedCountdown"></span>
+        </div>
+        <div class="dash-row">
+          <div class="card trend-card">
+            <div class="card-head"><h2>近 7 天续火趋势</h2><span class="hint" id="trendHint"></span></div>
+            <div class="trend" id="trendChart"></div>
+          </div>
+          <div class="card quote-card">
+            <div class="card-head"><h2>每日一言</h2><button class="btn btn-ghost btn-sm" id="btn-quote-refresh" title="换一句">🔄</button></div>
+            <blockquote class="quote" id="quoteBox">载入中…</blockquote>
+            <div class="quote-from" id="quoteFrom"></div>
+            <div class="form-actions"><button class="btn btn-ghost btn-sm" id="btn-quote-push">📮 推送到 TG</button></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>最近任务</h2></div>
+          <div class="table-wrap"><table id="recentTasks"><thead><tr><th>任务ID</th><th>触发</th><th>状态</th><th>开始</th><th>结束</th></tr></thead><tbody></tbody></table></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>账号状态</h2><button class="btn btn-ghost btn-sm" id="btn-refresh-acc">刷新</button></div>
+          <div class="table-wrap"><table id="dashAccounts"><thead><tr><th>账号</th><th>状态</th><th>上次续火</th><th>说明</th></tr></thead><tbody></tbody></table></div>
         </div>
       </section>
 
-      <!-- ========== 账号管理 ========== -->
-      <section class="tab-panel" data-panel="accounts">
-        <div class="friends-layout">
-          <article class="glass card">
-            <div class="card-head">
-              <div>
-                <p class="eyebrow">Accounts</p>
-                <h2>账号管理</h2>
-                <p class="card-desc">添加多个抖音账号，每个账号可配置独立的好友列表和 SOCKS 代理</p>
-              </div>
-              <div class="side-actions">
-                <button type="button" id="btn-add-account" class="primary-button">＋ 添加账号</button>
-              </div>
-            </div>
-            <div id="account-list" class="account-list"></div>
-            <p id="account-empty" class="empty">还没有账号，点击上方按钮添加</p>
-          </article>
-        </div>
-      </section>
-
-      <!-- ========== 好友管理 ========== -->
-      <section class="tab-panel" data-panel="friends">
-        <div class="friends-layout">
-          <article class="glass card">
-            <div class="card-head">
-              <div>
-                <p class="eyebrow">Targets</p>
-                <h2>续火好友</h2>
-                <p class="card-desc">勾选表示参与续火；取消勾选不会删除，仅下次不发送</p>
-              </div>
-              <div class="side-actions">
-                <select id="friends-account-select" class="log-filter"></select>
-                <button type="button" id="friend-add" class="primary-button">＋ 添加好友</button>
-              </div>
-            </div>
-            <div id="friend-list" class="friend-list"></div>
-            <p id="friend-empty" class="empty">还没有好友，在上方添加后勾选即可</p>
-          </article>
-        </div>
-      </section>
-
-      <!-- ========== 一言库 ========== -->
-      <section class="tab-panel" data-panel="yiyan">
-        <article class="glass card">
+      <!-- 账号管理 -->
+      <section class="view" id="view-accounts" hidden>
+        <div class="card">
           <div class="card-head">
-            <div>
-              <p class="eyebrow">Hitokoto</p>
-              <h2>一言库</h2>
-              <p class="card-desc">管理发送给好友的随机消息内容，每条消息会从启用的名言中随机选择</p>
-            </div>
-            <div class="side-actions">
-              <button type="button" id="btn-add-yiyan" class="primary-button">＋ 添加一言</button>
-              <button type="button" id="btn-import-yiyan" class="ghost-button">导入默认</button>
-              <button type="button" id="btn-random-yiyan" class="ghost-button">🎲 随机</button>
+            <h2>账号列表</h2>
+            <div class="account-actions">
+              <div class="account-action-group account-action-primary">
+                <button class="btn btn-primary btn-sm" id="btn-add-acc">＋ 添加账号</button>
+                <button class="btn btn-primary btn-sm" id="btn-spark-selected" disabled>✔ 勾选续火</button>
+              </div>
             </div>
           </div>
-          <div id="random-yiyan-result" class="random-result" hidden></div>
-          <div id="yiyan-list" class="yiyan-list"></div>
-          <p id="yiyan-empty" class="empty">一言库为空，请添加或导入默认</p>
-        </article>
+          <div class="batch-bar" id="batchBar" hidden>
+            <span class="hint">已选 <b id="selCount">0</b> 个账号</span>
+            <button class="btn btn-ghost btn-sm" id="btn-sel-enable">启用选中</button>
+            <button class="btn btn-ghost btn-sm" id="btn-sel-disable">停用选中</button>
+            <button class="btn btn-ghost btn-sm" id="btn-sel-clear">清空选择</button>
+          </div>
+          <div class="table-wrap"><table id="accTable"><thead><tr><th style="width:34px"><input type="checkbox" id="accCheckAll" title="全选" /></th><th>名称</th><th>状态</th><th>代理</th><th>上次续火</th><th>操作</th></tr></thead><tbody></tbody></table></div>
+        </div>
       </section>
 
-      <!-- ========== 配置 ========== -->
-      <section class="tab-panel" data-panel="config">
-        <article class="glass card">
+      <!-- 好友管理 -->
+      <section class="view" id="view-friends" hidden>
+        <div class="card">
           <div class="card-head">
-            <div>
-              <p class="eyebrow">Config</p>
-              <h2>基础配置</h2>
-              <p class="card-desc">保存后写入数据库，下次任务生效</p>
+            <h2>续火好友</h2>
+            <div class="account-actions">
+              <select id="friends-account-select" class="log-filter" style="width:auto"></select>
+              <button class="btn btn-primary btn-sm" id="btn-add-friend">＋ 添加好友</button>
             </div>
-            <button id="save-config" class="primary-button">保存配置</button>
           </div>
-          <div class="grid two">
-            <label class="field">
-              <span>消息模板（<code class="inline">{{yiyan}}</code> = 每日一言）</span>
-              <textarea rows="3" data-field="message_template" placeholder="{{friend}}，今天的火花到账啦🔥\n{{yiyan}}\n——「{{from}}」\n{{date}} {{weekday}}"></textarea>
-            </label>
-            <label class="field">
-              <span>一言出处</span>
-              <select data-field="yiyan_include_source">
-                <option value="1">显示出处</option>
-                <option value="0">不显示出处</option>
+          <div class="table-wrap"><table id="friendsTable"><thead><tr><th>好友名称</th><th>状态</th><th>上次续火</th><th>操作</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- 一言库 -->
+      <section class="view" id="view-yiyan" hidden>
+        <div class="card">
+          <div class="card-head">
+            <h2>一言库</h2>
+            <div class="account-actions">
+              <button class="btn btn-primary btn-sm" id="btn-add-yiyan">＋ 添加一言</button>
+              <button class="btn btn-ghost btn-sm" id="btn-import-yiyan">导入默认</button>
+              <button class="btn btn-ghost btn-sm" id="btn-random-yiyan">🎲 随机一条</button>
+            </div>
+          </div>
+          <div id="random-yiyan-result" class="card" style="display:none;"></div>
+          <div class="table-wrap"><table id="yiyanTable"><thead><tr><th>内容</th><th>出处</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </section>
+
+      <!-- 日志 -->
+      <section class="view" id="view-logs" hidden>
+        <div class="card">
+          <div class="card-head">
+            <h2>续火日志</h2>
+            <div class="log-tools">
+              <input class="log-search" id="logSearch" placeholder="🔍 搜索账号/消息" />
+              <select id="logFilter" class="log-filter">
+                <option value="">全部状态</option>
+                <option value="success">仅成功</option>
+                <option value="partial">仅部分</option>
+                <option value="failed">仅失败</option>
               </select>
-            </label>
+              <button class="btn btn-ghost btn-sm" id="btn-refresh-logs">刷新</button>
+              <button class="btn btn-danger btn-sm" id="btn-clear-logs">清空</button>
+            </div>
           </div>
-          <label class="field mt">
-            <span>日志保留天数</span>
-            <input type="number" data-field="log_retention_days" min="0" value="30" />
-            <small>0 = 不自动清理</small>
-          </label>
-        </article>
-
-        <article class="glass card">
-          <div class="card-head"><h2>定时续火</h2></div>
-          <div class="grid two">
-            <label class="field">
-              <span>启用定时</span>
-              <label class="inline-check"><input type="checkbox" id="s-schedule-enabled" /> 开启定时任务</label>
-            </label>
-            <label class="field">
-              <span>Cron 表达式</span>
-              <input type="text" id="s-schedule-cron" value="0 8 * * *" />
-              <small>格式：分 时 日 月 周（默认每天 8:00）</small>
-            </label>
-          </div>
-          <button id="save-schedule" class="primary-button">保存定时设置</button>
-        </article>
+          <div class="log-list" id="logList"></div>
+          <div class="hint" id="logCount" style="margin-top:10px"></div>
+        </div>
       </section>
 
-      <!-- ========== 通知 ========== -->
-      <section class="tab-panel" data-panel="notify">
-        <article class="glass card">
-          <div class="card-head">
-            <div>
-              <p class="eyebrow">Notify</p>
-              <h2>Telegram 通知</h2>
-              <p class="card-desc">续火任务结束后推送结果到 Telegram</p>
-            </div>
-            <div class="side-actions">
-              <button id="save-notify" class="primary-button">保存</button>
-              <button id="test-notify" class="ghost-button">发送测试</button>
+      <!-- 设置 -->
+      <section class="view" id="view-settings" hidden>
+        <div class="settings-grid">
+          <div class="card">
+            <div class="card-head"><h2>Telegram 通知</h2></div>
+            <div class="form">
+              <label>启用 TG 推送<input type="checkbox" id="s-tg_enabled" /></label>
+              <label>Bot Token <input id="s-tg_bot_token" placeholder="123456:ABC-DEF..." autocomplete="off" /></label>
+              <label>Chat / User ID <input id="s-tg_user_id" placeholder="987654321" /></label>
+              <label>附带每日一言<input type="checkbox" id="s-tg_quote_enabled" /></label>
+              <label>仅异常时推送<input type="checkbox" id="s-tg_only_on_change" /></label>
+              <label>静默推送（不提示音）<input type="checkbox" id="s-tg_silent" /></label>
+              <div class="form-actions">
+                <button class="btn btn-ghost" id="btn-test-tg">测试推送</button>
+              </div>
             </div>
           </div>
-          <div class="grid two">
-            <label class="field">
-              <span>启用 TG 推送</span>
-              <label class="inline-check"><input type="checkbox" id="s-tg-enabled" /> 开启 Telegram 通知</label>
-            </label>
-            <label class="field">
-              <span>Bot Token</span>
-              <input type="text" id="s-tg-token" placeholder="123456:ABC-DEF..." />
-            </label>
-            <label class="field">
-              <span>Chat / User ID</span>
-              <input type="text" id="s-tg-chat-id" placeholder="987654321" />
-            </label>
-            <label class="field">
-              <span>推送选项</span>
-              <label class="inline-check"><input type="checkbox" id="s-tg-quote" /> 附带每日一言</label>
-            </label>
-            <label class="field">
-              <span>　</span>
-              <label class="inline-check"><input type="checkbox" id="s-tg-only-error" /> 仅异常时推送</label>
-            </label>
-            <label class="field">
-              <span>　</span>
-              <label class="inline-check"><input type="checkbox" id="s-tg-silent" /> 静默推送（不提示音）</label>
-            </label>
+          <div class="card">
+            <div class="card-head"><h2>定时续火</h2></div>
+            <div class="form">
+              <label>启用定时<input type="checkbox" id="s-schedule_enabled" /></label>
+              <label>Cron 表达式 <input id="s-schedule_cron" placeholder="0 8 * * *" /><small>默认每天 8:00</small></label>
+              <div class="form-actions"><button class="btn btn-ghost" id="btn-save-schedule">保存</button></div>
+            </div>
           </div>
-        </article>
+          <div class="card">
+            <div class="card-head"><h2>消息模板</h2></div>
+            <div class="form">
+              <label>自定义模板（<code>[API]</code> = 每日一言）
+                <textarea id="s-message_template" rows="4" placeholder="{{friend}}，今天的火花到账啦🔥\n{{yiyan}}\n——「{{from}}」\n{{date}} {{weekday}}"></textarea>
+              </label>
+              <label>一言出处
+                <select id="s-yiyan_include_source">
+                  <option value="1">显示出处</option>
+                  <option value="0">不显示出处</option>
+                </select>
+              </label>
+              <div class="form-actions"><button class="btn btn-ghost" id="btn-save-template">保存</button></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>日志保留</h2></div>
+            <div class="form">
+              <label>保留天数<input type="number" id="s-log_retention_days" min="0" value="30" /><small>0 = 不自动清理</small></label>
+              <div class="form-actions"><button class="btn btn-ghost" id="btn-save-retention">保存</button></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>账户</h2></div>
+            <div class="form">
+              <div class="row2">
+                <label>原密码<input type="password" id="p-old" autocomplete="off" /></label>
+                <label>新密码<input type="password" id="p-new" autocomplete="off" /></label>
+              </div>
+              <div class="form-actions">
+                <button class="btn btn-ghost" id="btn-change-pwd">修改密码</button>
+                <button class="btn btn-danger" id="btn-logout">退出登录</button>
+              </div>
+              <small class="hint" id="pwd-status"></small>
+            </div>
+          </div>
+        </div>
+        <div class="card settings-save">
+          <button class="btn btn-primary" id="btn-save-all">💾 保存全部设置</button>
+          <span class="save-status" id="saveStatus"></span>
+        </div>
       </section>
-
-      <!-- ========== 日志 ========== -->
-      <section class="tab-panel" data-panel="logs">
-        <article class="glass card">
-          <div class="card-head">
-            <div>
-              <p class="eyebrow">Runtime</p>
-              <h2>运行日志</h2>
-              <p class="card-desc">近期执行记录与详细输出</p>
-            </div>
-            <div class="side-actions">
-              <button id="refresh-logs" class="ghost-button">刷新</button>
-              <button id="clear-logs" class="ghost-button danger">清空</button>
-            </div>
-          </div>
-          <div class="log-tools">
-            <input class="log-search" id="log-search" placeholder="🔍 搜索账号/消息" />
-            <select id="log-filter" class="log-filter">
-              <option value="">全部状态</option>
-              <option value="success">仅成功</option>
-              <option value="partial">仅部分</option>
-              <option value="failed">仅失败</option>
-            </select>
-          </div>
-          <div id="log-list" class="log-list"></div>
-          <p id="log-empty" class="empty">暂无日志</p>
-        </article>
-      </section>
-    </div>
+    </main>
   </div>
 
   <!-- 弹窗：账号编辑 -->
-  <div class="modal-mask" id="account-modal" hidden>
+  <div class="modal-mask" id="accModal" hidden>
     <div class="modal">
       <div class="modal-head">
-        <h2 id="account-modal-title">添加账号</h2>
-        <button class="modal-close" id="account-modal-close">×</button>
+        <h2 id="accModalTitle">添加账号</h2>
+        <button class="modal-close" id="accModalClose">×</button>
       </div>
       <div class="modal-body">
         <div class="form">
-          <label class="field">
-            <span>账号名称</span>
-            <input id="m-name" type="text" placeholder="例如：小号1" />
-          </label>
-          <label class="field">
-            <span>Cookie JSON</span>
-            <textarea id="m-cookie" rows="8" placeholder="从 Cookie-Editor 导出的完整 JSON 数组"></textarea>
-          </label>
-          <label class="field">
-            <span>SOCKS5 代理（可选）</span>
-            <input id="m-proxy" type="text" placeholder="socks5://user:pass@host:port" />
-          </label>
-          <label class="inline-check"><input type="checkbox" id="m-enabled" checked /> 启用账号</label>
+          <label>账号名称<input id="m-name" placeholder="例如：小号1" /></label>
+          <label>Cookie JSON（从 Cookie-Editor 导出）<textarea id="m-cookie" rows="6" placeholder='[{"name":"sessionid","value":"...","domain":".douyin.com"}]'></textarea></label>
+          <label>SOCKS5 代理（可选）<input id="m-proxy" placeholder="socks5://user:pass@host:port" /></label>
+          <label class="inline"><input type="checkbox" id="m-enabled" checked /> 启用自动续火</label>
         </div>
       </div>
       <div class="modal-foot">
-        <button class="ghost-button" id="account-modal-cancel">取消</button>
-        <button class="primary-button" id="account-modal-save">保存</button>
+        <button class="btn btn-ghost" id="accModalCancel">取消</button>
+        <button class="btn btn-primary" id="accModalSave">保存</button>
       </div>
     </div>
   </div>
 
   <!-- 弹窗：好友编辑 -->
-  <div class="modal-mask" id="friend-modal" hidden>
+  <div class="modal-mask" id="friendModal" hidden>
     <div class="modal modal-sm">
-      <div class="modal-head">
-        <h2>添加好友</h2>
-        <button class="modal-close" id="friend-modal-close">×</button>
-      </div>
+      <div class="modal-head"><h2>添加好友</h2><button class="modal-close" id="friendModalClose">×</button></div>
       <div class="modal-body">
         <div class="form">
-          <label class="field">
-            <span>好友名称（建议用抖音备注名）</span>
-            <input id="m-friend-name" type="text" placeholder="输入昵称" />
-          </label>
+          <label>好友名称（建议用抖音备注名）<input id="m-friend-name" placeholder="输入昵称" /></label>
         </div>
       </div>
       <div class="modal-foot">
-        <button class="ghost-button" id="friend-modal-cancel">取消</button>
-        <button class="primary-button" id="friend-modal-save">保存</button>
+        <button class="btn btn-ghost" id="friendModalCancel">取消</button>
+        <button class="btn btn-primary" id="friendModalSave">保存</button>
       </div>
     </div>
   </div>
 
   <!-- 弹窗：一言编辑 -->
-  <div class="modal-mask" id="yiyan-modal" hidden>
+  <div class="modal-mask" id="yiyanModal" hidden>
     <div class="modal modal-sm">
-      <div class="modal-head">
-        <h2>添加一言</h2>
-        <button class="modal-close" id="yiyan-modal-close">×</button>
-      </div>
+      <div class="modal-head"><h2>添加一言</h2><button class="modal-close" id="yiyanModalClose">×</button></div>
       <div class="modal-body">
         <div class="form">
-          <label class="field">
-            <span>内容</span>
-            <textarea id="m-yiyan-text" rows="3" placeholder="输入一言内容"></textarea>
-          </label>
-          <label class="field">
-            <span>出处</span>
-            <input id="m-yiyan-source" type="text" placeholder="如：火影忍者" />
-          </label>
+          <label>内容<textarea id="m-yiyan-text" rows="3" placeholder="输入一言内容"></textarea></label>
+          <label>出处<input id="m-yiyan-source" placeholder="如：火影忍者" /></label>
         </div>
       </div>
       <div class="modal-foot">
-        <button class="ghost-button" id="yiyan-modal-cancel">取消</button>
-        <button class="primary-button" id="yiyan-modal-save">保存</button>
+        <button class="btn btn-ghost" id="yiyanModalCancel">取消</button>
+        <button class="btn btn-primary" id="yiyanModalSave">保存</button>
       </div>
     </div>
   </div>
 
-  <!-- 弹窗：运行进度 -->
-  <div class="modal-mask" id="run-modal" hidden>
+  <!-- 弹窗：手动运行状态 -->
+  <div class="modal-mask" id="runModal" hidden>
     <div class="modal modal-sm">
-      <div class="modal-head"><h2>续火运行中</h2><button class="modal-close" id="run-modal-close">×</button></div>
+      <div class="modal-head"><h2>续火运行中</h2><button class="modal-close" id="runModalClose">×</button></div>
       <div class="modal-body">
-        <div class="run-progress"><div class="run-bar" id="run-bar"></div></div>
-        <div class="run-info" id="run-info">准备中…</div>
-        <div class="run-lines" id="run-lines"></div>
+        <div class="run-progress"><div class="run-bar" id="runBar"></div></div>
+        <div class="run-info" id="runInfo">准备中…</div>
+        <div class="run-lines" id="runLines"></div>
       </div>
     </div>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script type="module" src="/app.js"></script>
+  <div class="toast" id="toast"></div>
+  <script src="/app.js?v=1.0.0"></script>
 </body>
 </html>
