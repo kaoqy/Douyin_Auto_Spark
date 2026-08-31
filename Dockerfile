@@ -26,14 +26,23 @@ ENV PYTHONUNBUFFERED=1 \
     APP_HOST=0.0.0.0 \
     APP_PORT=8000
 
+# 安装系统依赖和 Playwright 浏览器
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tzdata ca-certificates \
+    && apt-get install -y --no-install-recommends \
+        tzdata ca-certificates \
+        libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+        libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
+        libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
+        libcairo2 libasound2 libatspi2.0-0 \
     && ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && dpkg-reconfigure -f noninteractive tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build --link /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
+
+# 安装 Playwright 浏览器
+RUN /opt/venv/bin/playwright install chromium
 
 RUN /opt/venv/bin/pip uninstall -y pip setuptools 2>/dev/null || true \
     && find /opt/venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
@@ -52,6 +61,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request,sys,os; \
         sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:'+os.environ['APP_PORT']+'/api/health', timeout=3).status==200 else 1)"
 
-EXPOSE 8001
+EXPOSE 8000
 
 CMD ["python", "run.py", "--host", "0.0.0.0", "--port", "8000"]

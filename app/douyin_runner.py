@@ -100,14 +100,18 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
             search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
-            visible = await search_input.wait_for(state="visible", timeout=15000).then(lambda: True).catch(lambda: False)
-
-            if visible:
+            try:
+                await search_input.wait_for(state="visible", timeout=15000)
                 return {"valid": True, "message": "Cookie 有效"}
+            except Exception:
+                pass
 
-            login_btn = page.locator('text=登录, text=扫码登录').first()
-            if await login_btn.is_visible(timeout=3000):
-                return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
+            try:
+                login_btn = page.locator('text=登录, text=扫码登录').first()
+                if await login_btn.is_visible(timeout=3000):
+                    return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
+            except Exception:
+                pass
 
             return {"valid": False, "message": "无法确认 Cookie 状态"}
 
@@ -141,8 +145,9 @@ async def fetch_friend_list(account: dict) -> list[str]:
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
             search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
-            visible = await search_input.wait_for(state="visible", timeout=15000).then(lambda: True).catch(lambda: False)
-            if not visible:
+            try:
+                await search_input.wait_for(state="visible", timeout=15000)
+            except Exception:
                 return []
 
             await page.wait_for_timeout(3000)
@@ -230,11 +235,9 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
             search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
-            search_visible = await search_input.wait_for(
-                state="visible", timeout=CHAT_PAGE_READY_TIMEOUT
-            ).then(lambda: True).catch(lambda: False)
-
-            if not search_visible:
+            try:
+                await search_input.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
+            except Exception:
                 result.status = "failed"
                 result.message = "聊天页搜索框未出现，Cookie 可能已经失效"
                 log.error("  [%s] 聊天页搜索框未出现，Cookie 可能已经失效", account["name"])
@@ -244,9 +247,19 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             await _wait_chat_list_ready(page, account["name"])
 
             missing_names: list[str] = []
-            for target in targets:
+            spark_delay_min = float(database.get_setting("spark_delay_min", "3") or "3")
+            spark_delay_max = float(database.get_setting("spark_delay_max", "8") or "8")
+
+            for idx, target in enumerate(targets):
                 target_name = target["name"]
                 log.info("  [%s] 开始搜索会话：%s", account["name"], target_name)
+
+                # 好友间随机延时
+                if idx > 0 and spark_delay_min > 0:
+                    import random
+                    delay = random.uniform(spark_delay_min, max(spark_delay_min, spark_delay_max))
+                    log.info("  [%s] 好友间延时 %.1f 秒", account["name"], delay)
+                    await page.wait_for_timeout(int(delay * 1000))
 
                 search_result = await _search_conversation(
                     page, search_input, account["name"], target_name
@@ -264,7 +277,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     result.fail += 1
                     continue
 
-                # 点击「发消息」
+                # 点击搜索结果进入对话
                 try:
                     send_btn = search_result.locator('text=发消息, text=发私信').first()
                     if await send_btn.is_visible(timeout=3000):
@@ -272,14 +285,15 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     else:
                         await search_result.click(timeout=5000)
                 except Exception:
-                    await search_result.click(timeout=5000)
+                    try:
+                        await search_result.click(timeout=5000)
+                    except Exception:
+                        pass
 
                 log.info("  [%s] 已打开私信：%s", account["name"], target_name)
-
-                # 等待聊天页加载
                 await page.wait_for_timeout(2000)
 
-                # 定位输入框 - 尝试多种选择器
+                # 定位输入框
                 editor_input = None
                 selectors = [
                     '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]',
@@ -310,7 +324,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 await editor_input.click()
                 await page.wait_for_timeout(500)
 
-                # 渲染消息
+                # 渲染并发送消息
                 msg = yiyan.render_message(
                     message_template or None,
                     account["name"],
@@ -318,7 +332,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     include_source=include_source,
                 )
 
-                # 输入消息 - 使用 insertText 更可靠
                 await page.keyboard.insert_text(msg)
                 await page.wait_for_timeout(500)
                 await page.keyboard.press("Enter")
@@ -376,10 +389,6 @@ async def _search_conversation(
     page: Any, search_input: Any, account_name: str, target_name: str
 ) -> Any:
     """带重试地搜索会话"""
-    search_result = page.locator(".SearchPanelitembox").filter(
-        has=page.get_by_text(target_name, exact=True)
-    ).first()
-
     for attempt in range(1, SEARCH_RETRY_LIMIT + 1):
         await search_input.fill("")
         try:
@@ -392,6 +401,9 @@ async def _search_conversation(
         await search_input.fill(target_name)
 
         try:
+            search_result = page.locator(".SearchPanelitembox").filter(
+                has=page.get_by_text(target_name, exact=True)
+            ).first()
             await search_result.wait_for(state="visible", timeout=SEARCH_RESULT_TIMEOUT)
             return search_result
         except Exception:

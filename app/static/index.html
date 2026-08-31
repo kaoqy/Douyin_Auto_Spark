@@ -289,7 +289,18 @@
       <div class="modal-body">
         <div class="form">
           <label>账号名称<input id="m-name" placeholder="例如：小号1" /></label>
-          <label>Cookie JSON（从 Cookie-Editor 导出）<textarea id="m-cookie" rows="6" placeholder='[{"name":"sessionid","value":"...","domain":".douyin.com"}]'></textarea></label>
+          <div class="cookie-editor">
+            <div class="cookie-editor-head">
+              <span>Cookie 编辑器</span>
+              <button type="button" class="btn btn-ghost btn-sm" id="btn-add-cookie-row">＋ 添加字段</button>
+            </div>
+            <div id="cookieEditorRows" class="cookie-editor-rows"></div>
+            <div class="cookie-editor-foot">
+              <span class="hint" id="cookieCount">0 个字段</span>
+              <span class="hint">自动检测字段并生成 JSON</span>
+            </div>
+          </div>
+          <label style="margin-top:12px">原始 JSON（只读，自动生成）<textarea id="m-cookie" rows="4" readonly placeholder='[{"name":"sessionid","value":"...","domain":".douyin.com"}]'></textarea></label>
           <label>使用代理（指定 socks 节点，不同节点可并行续火）
             <select id="m-proxy"><option value="">自动 / 直连</option></select>
           </label>

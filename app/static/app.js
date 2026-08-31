@@ -69,10 +69,10 @@ $$('.nav-item').forEach(btn => {
 async function loadDashboard() {
   try {
     const [accountsRes, targetsRes, tasksRes, scheduleRes] = await Promise.all([
-      api.get('/api/accounts'),
-      api.get('/api/targets'),
-      api.get('/api/tasks'),
-      api.get('/api/tasks/schedule'),
+      api.get('/api/accounts').catch(() => ({accounts: []})),
+      api.get('/api/targets').catch(() => ({targets: []})),
+      api.get('/api/tasks').catch(() => ({tasks: []})),
+      api.get('/api/tasks/schedule').catch(() => ({enabled: false})),
     ]);
     const accounts = accountsRes.accounts || [];
     const targets = targetsRes.targets || [];
@@ -83,13 +83,17 @@ async function loadDashboard() {
     const enabledTargets = targets.filter(t => t.enabled);
     const okAcc = accounts.filter(a => a.last_status === 'success').length;
 
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const todaySuccess = tasks.filter(t => t.status === 'success' && t.started_at && t.started_at.startsWith(todayStr)).length;
+    const todayFail = tasks.filter(t => (t.status === 'failed' || t.status === 'partial') && t.started_at && t.started_at.startsWith(todayStr)).length;
+
     $('#statGrid').innerHTML = [
       card('账号总数', accounts.length, 'acc', '个'),
       card('启用中', enabledAcc.length, '', '个'),
       card('续火正常', okAcc, 'green', '个'),
       card('续火好友', enabledTargets.length, 'green', '个'),
-      card('今日成功', tasks.filter(t => t.status === 'success' && t.started_at && t.startsWith(new Date().toISOString().slice(0, 10))).length, '', '次'),
-      card('今日失败', tasks.filter(t => (t.status === 'failed' || t.status === 'partial') && t.started_at && t.startsWith(new Date().toISOString().slice(0, 10))).length, '', '次'),
+      card('今日成功', todaySuccess, '', '次'),
+      card('今日失败', todayFail, '', '次'),
     ].join('');
 
     const strip = $('#schedStrip');
@@ -267,18 +271,28 @@ async function populateProxySelect(sel, selectedUrl = '') {
   sel.innerHTML = opt('', '自动 / 直连') + proxies.map(p => opt(p.url, p.label || p.ip)).join('');
 }
 
+/* ===== Cookie 编辑器 ===== */
 function openAccModal(id = null) {
   editingAccId = id;
   $('#accModalTitle').textContent = id ? '编辑账号' : '添加账号';
   $('#m-name').value = '';
   $('#m-cookie').value = '';
   $('#m-enabled').checked = true;
+  // 重置 Cookie 编辑器
+  resetCookieEditor();
   populateProxySelect($('#m-proxy'), '');
   if (id) {
     api.get('/api/accounts/' + id).then(a => {
       $('#m-name').value = a.name;
       populateProxySelect($('#m-proxy'), a.proxy || '');
       $('#m-enabled').checked = !!a.enabled;
+      // 尝试解析已有 Cookie 到编辑器
+      try {
+        const cookies = JSON.parse(a.cookie);
+        if (Array.isArray(cookies)) {
+          populateCookieEditor(cookies);
+        }
+      } catch(e) {}
     });
   }
   $('#accModal').hidden = false;
@@ -319,6 +333,52 @@ async function delAcc(id) {
   try { await api.del('/api/accounts/' + id); toast('已删除', 'good'); loadAccounts(); loadDashboard(); }
   catch (e) { toast('删除失败', 'err'); }
 }
+
+/* ===== Cookie 编辑器 UI ===== */
+function resetCookieEditor() {
+  $('#cookieEditorRows').innerHTML = '';
+  addCookieRow();
+  updateCookieJson();
+}
+
+function populateCookieEditor(cookies) {
+  $('#cookieEditorRows').innerHTML = '';
+  if (!cookies.length) { addCookieRow(); return; }
+  cookies.forEach(c => addCookieRow(c.name || '', c.value || '', c.domain || '.douyin.com'));
+  updateCookieJson();
+}
+
+function addCookieRow(name = '', value = '', domain = '.douyin.com') {
+  const div = document.createElement('div');
+  div.className = 'cookie-row';
+  div.innerHTML = `
+    <input type="text" class="cookie-name" placeholder="name" value="${esc(name)}" />
+    <input type="text" class="cookie-value" placeholder="value" value="${esc(value)}" />
+    <input type="text" class="cookie-domain" placeholder="domain" value="${esc(domain)}" />
+    <button type="button" class="btn btn-ghost btn-sm cookie-row-del" title="删除">×</button>
+  `;
+  div.querySelector('.cookie-row-del').onclick = () => { div.remove(); updateCookieJson(); };
+  div.querySelectorAll('input').forEach(inp => inp.oninput = updateCookieJson);
+  $('#cookieEditorRows').appendChild(div);
+}
+
+function updateCookieJson() {
+  const rows = $$('#cookieEditorRows .cookie-row');
+  const cookies = [];
+  rows.forEach(row => {
+    const name = row.querySelector('.cookie-name').value.trim();
+    const value = row.querySelector('.cookie-value').value.trim();
+    const domain = row.querySelector('.cookie-domain').value.trim() || '.douyin.com';
+    if (name && value) {
+      cookies.push({ name, value, domain, path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction' });
+    }
+  });
+  $('#m-cookie').value = cookies.length ? JSON.stringify(cookies) : '';
+  const count = $('#cookieCount');
+  if (count) count.textContent = `${cookies.length} 个字段`;
+}
+
+$('#btn-add-cookie-row').onclick = () => addCookieRow();
 
 /* ===== 代理管理 ===== */
 editingProxyId = null;
@@ -486,11 +546,10 @@ async function loadFriends() {
   try {
     const accounts = (await api.get('/api/accounts')).accounts || [];
     const select = $('#friends-account-select');
-    if (!select.children.length) {
-      select.innerHTML = '<option value="">选择账号</option>' +
-        accounts.filter(a => a.enabled).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
-      select.onchange = () => { currentFriendAccountId = select.value ? parseInt(select.value) : null; renderFriends(); };
-    }
+    // 始终重新填充，确保列表最新
+    select.innerHTML = '<option value="">选择账号</option>' +
+      accounts.filter(a => a.enabled).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+    select.onchange = () => { currentFriendAccountId = select.value ? parseInt(select.value) : null; renderFriends(); };
     if (!currentFriendAccountId && accounts.length) {
       currentFriendAccountId = accounts.find(a => a.enabled)?.id || accounts[0].id;
       select.value = currentFriendAccountId;
