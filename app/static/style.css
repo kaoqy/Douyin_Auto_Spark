@@ -151,10 +151,13 @@ nav{display:flex;flex-direction:column;gap:4px;flex:1}
 .stat.acc::after{background:var(--accent)}
 .stat .num{font-size:26px;font-weight:800;letter-spacing:-.5px}
 .stat .lbl{color:var(--muted);font-size:12px;margin-top:3px}
-.stat.green .num{color:var(--success)}
-.stat.red .num{color:var(--danger)}
+.stat.green .num,.stat.ok .num{color:var(--success)}
+.stat.red .num,.stat.bad .num{color:var(--danger)}
 .stat.amber .num{color:var(--warn)}
 .stat.acc .num{color:var(--accent)}
+.stat.blue .num{color:#3b82f6}
+.stat.purple .num{color:#a855f7}
+.stat.orange .num{color:#f59e0b}
 
 /* ===== 卡片 ===== */
 .card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px;margin-bottom:18px;transition:border-color .2s,box-shadow .2s}

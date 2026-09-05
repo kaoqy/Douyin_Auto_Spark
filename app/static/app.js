@@ -74,32 +74,32 @@ $$('.nav-item').forEach(btn => {
 /* ===== 仪表盘 ===== */
 async function loadDashboard() {
   try {
-    const [accountsRes, targetsRes, tasksRes, scheduleRes] = await Promise.all([
-      api.get('/api/accounts').catch(() => ({accounts: []})),
-      api.get('/api/targets').catch(() => ({targets: []})),
-      api.get('/api/tasks').catch(() => ({tasks: []})),
+    const [statsRes, scheduleRes] = await Promise.all([
+      api.get('/api/stats').catch(() => null),
       api.get('/api/tasks/schedule').catch(() => ({enabled: false})),
     ]);
-    const accounts = accountsRes.accounts || [];
-    const targets = targetsRes.targets || [];
-    const tasks = tasksRes.tasks || [];
+    const stats = statsRes || {};
     const schedule = scheduleRes;
 
-    const enabledAcc = accounts.filter(a => a.enabled);
-    const enabledTargets = targets.filter(t => t.enabled);
-    const okAcc = accounts.filter(a => a.last_status === 'success').length;
+    const acc = stats.accounts || {total: 0, enabled: 0};
+    const tgt = stats.targets || {total: 0, enabled: 0};
+    const runs = stats.runs || {total: 0, success: 0, partial: 0, failed: 0, success_rate: '—'};
+    const msgs = stats.messages || {total: 0, ok: 0, fail: 0};
 
     const todayStr = new Date().toISOString().slice(0, 10);
+    const tasks = (await api.get('/api/tasks').catch(() => ({tasks: []}))).tasks || [];
     const todaySuccess = tasks.filter(t => t.status === 'success' && t.started_at && t.started_at.startsWith(todayStr)).length;
     const todayFail = tasks.filter(t => (t.status === 'failed' || t.status === 'partial') && t.started_at && t.started_at.startsWith(todayStr)).length;
 
     $('#statGrid').innerHTML = [
-      card('账号总数', accounts.length, 'acc', '个'),
-      card('启用中', enabledAcc.length, '', '个'),
-      card('续火正常', okAcc, 'green', '个'),
-      card('续火好友', enabledTargets.length, 'green', '个'),
-      card('今日成功', todaySuccess, '', '次'),
-      card('今日失败', todayFail, '', '次'),
+      card('账号', `${acc.enabled}/${acc.total}`, 'acc', '个'),
+      card('续火好友', `${tgt.enabled}/${tgt.total}`, '', '个'),
+      card('总任务', runs.total, 'blue', '次'),
+      card('成功率', runs.success_rate, 'green', ''),
+      card('今日成功', todaySuccess, 'ok', '次'),
+      card('今日失败', todayFail, todayFail > 0 ? 'bad' : '', '次'),
+      card('总消息', msgs.total, 'purple', '条'),
+      card('活跃账号', stats.active_accounts || 0, 'orange', '个'),
     ].join('');
 
     const strip = $('#schedStrip');
@@ -110,6 +110,10 @@ async function loadDashboard() {
       strip.hidden = false;
       $('#schedText').textContent = '定时续火已关闭（可到设置里开启）';
     }
+
+    // 账号列表
+    const accountsRes = await api.get('/api/accounts').catch(() => ({accounts: []}));
+    const accounts = accountsRes.accounts || [];
 
     loadTrend(tasks);
     loadQuote();
@@ -122,7 +126,9 @@ async function loadDashboard() {
 }
 
 function card(lbl, num, cls, suffix = '') {
-  return `<div class="stat ${cls}"><div class="num">${num}<span style="font-size:14px">${suffix}</span></div><div class="lbl">${lbl}</div></div>`;
+  const clsMap = { ok: 'ok', bad: 'bad', green: 'ok', blue: 'blue', purple: 'purple', orange: 'orange', acc: 'acc' };
+  const statCls = clsMap[cls] || '';
+  return `<div class="stat ${statCls}"><div class="num">${num}<span style="font-size:14px">${suffix}</span></div><div class="lbl">${lbl}</div></div>`;
 }
 
 function renderRecentTasks(tasks) {
