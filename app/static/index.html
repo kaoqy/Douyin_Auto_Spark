@@ -273,23 +273,50 @@
       <div class="modal-body">
         <div class="form">
           <label>账号名称<input id="m-name" placeholder="例如：小号1" /></label>
-          <label>Cookie（粘贴文字自动识别所有字段）
-            <textarea id="m-cookie" rows="6" placeholder='从浏览器开发者工具或 Cookie Editor 导出粘贴，例如：
-sessionid=abc123; ......' style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
-          </label>
           <div class="cookie-editor">
-            <div class="cookie-editor-head">
-              <span>识别到的字段</span>
-              <button type="button" class="btn btn-ghost btn-sm" id="btn-add-cookie-row">＋ 添加字段</button>
+            <div class="cookie-tabs" role="tablist">
+              <button type="button" class="cookie-tab active" data-tab="text" role="tab" aria-selected="true">粘贴文本</button>
+              <button type="button" class="cookie-tab" data-tab="rows" role="tab" aria-selected="false">编辑字段 <span class="badge" id="cookieCountBadge">0</span></button>
+              <button type="button" class="cookie-tab" data-tab="json" role="tab" aria-selected="false">JSON 预览</button>
             </div>
-            <div id="cookieEditorRows" class="cookie-editor-rows"></div>
-            <div class="cookie-editor-foot">
-              <span class="hint" id="cookieCount">0 个字段</span>
-              <span class="hint">修改字段后点击「生成 JSON」</span>
+            <div class="cookie-pane cookie-pane-text active" data-pane="text">
+              <textarea id="m-cookie" rows="7" placeholder="从这里粘贴 Cookie。多种格式都可以：
+
+1) Netscape / 浏览器复制：sessionid=abc; sid_tt=def; uid_tt=ghi
+2) Set-Cookie 原始文本：sessionid=abc; Path=/; Domain=.douyin.com; HttpOnly
+3) JSON 数组：[{""name"":""sessionid"",""value"":""abc"",""domain"":""https://www.douyin.com""}]
+
+解析后会自动进入“编辑字段”视图。" style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+              <div class="cookie-pane-foot">
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-cookie-parse">解析</button>
+                <span class="hint" id="cookieParseStatus">支持 Netscape、Set-Cookie、JSON 数组。</span>
+              </div>
+            </div>
+            <div class="cookie-pane cookie-pane-rows" data-pane="rows">
+              <div class="cookie-rows-head">
+                <div>name</div>
+                <div>value</div>
+                <div>domain</div>
+                <div>flags</div>
+                <div></div>
+              </div>
+              <div id="cookieEditorRows" class="cookie-rows"></div>
+              <div class="cookie-pane-foot">
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-add-cookie-row">＋ 添加字段</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-cookie-dedupe">去重</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-cookie-replace-dupe">同 name 覆盖</button>
+                <span class="hint" id="cookieEditStatus">还没字段，点上面“粘贴文本”或“添加字段”。</span>
+              </div>
+            </div>
+            <div class="cookie-pane cookie-pane-json" data-pane="json">
+              <textarea id="m-cookie-json" rows="8" spellcheck="false" placeholder='自动生成的 Playwright cookies JSON。' style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+              <div class="cookie-pane-foot">
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-cookie-rebuild">从字段重建</button>
+                <button type="button" class="btn btn-ghost btn-sm" id="btn-cookie-format">格式化</button>
+                <span class="hint" id="cookieJsonStatus">编辑上方字段会即时反映在这里。</span>
+              </div>
             </div>
           </div>
-          <div class="form-actions"><button class="btn btn-ghost" id="btn-gen-cookie" type="button">生成 JSON</button><span class="hint" id="cookieGenStatus"></span></div>
-          <label style="margin-top:12px">原始 JSON（只读）<textarea id="m-cookie-json" rows="4" readonly placeholder='自动生成...' style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea></label>
           <label>使用代理（指定 socks 节点，不同节点可并行续火）
             <select id="m-proxy"><option value="">自动 / 直连</option></select>
           </label>

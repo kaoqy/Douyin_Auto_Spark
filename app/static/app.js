@@ -323,13 +323,13 @@ async function populateProxySelect(sel, selectedUrl = '') {
 }
 
 /* ===== Cookie 编辑器 ===== */
+let __cookieFields = [];
+let __cookieSource = '';  // 'text' | 'rows' | 'json'
+
 function openAccModal(id = null) {
   editingAccId = id;
   $('#accModalTitle').textContent = id ? '编辑账号' : '添加账号';
   $('#m-name').value = '';
-  $('#m-cookie').value = '';
-  $('#m-cookie-json').value = '';
-  $('#m-enabled').checked = true;
   resetCookieEditor();
   populateProxySelect($('#m-proxy'), '');
   if (id) {
@@ -337,21 +337,19 @@ function openAccModal(id = null) {
       $('#m-name').value = a.name;
       populateProxySelect($('#m-proxy'), a.proxy || '');
       $('#m-enabled').checked = !!a.enabled;
-      try {
-        const cookies = JSON.parse(a.cookie);
-        if (Array.isArray(cookies)) {
-          populateCookieEditor(cookies);
-          generateCookieJson();
-        } else if (typeof a.cookie === 'string' && a.cookie.includes('=')) {
-          $('#m-cookie').value = a.cookie;
-          const parsed = parseCookieText(a.cookie);
-          if (parsed.length) {
-            populateCookieEditor(parsed);
-            generateCookieJson();
-          }
-        }
-      } catch(e) {}
+      const initial = parseCookieString(a.cookie);
+      if (initial.length) {
+        setCookieFields(initial, 'json');
+        switchCookieTab('rows');
+      } else {
+        setCookieFields([], 'text');
+        switchCookieTab('text');
+      }
+      $('#m-cookie').value = a.cookie && !a.cookie.startsWith('[') ? a.cookie : '';
+      updateCookieJson();
     });
+  } else {
+    switchCookieTab('text');
   }
   $('#accModal').hidden = false;
 }
@@ -359,34 +357,35 @@ $('#btn-add-acc').onclick = () => openAccModal();
 $('#accModalClose').onclick = $('#accModalCancel').onclick = () => $('#accModal').hidden = true;
 
 $('#accModalVerify').onclick = async () => {
-  const cookie = $('#m-cookie-json').value.trim() || $('#m-cookie').value.trim();
+  // 验证时使用当前最新的 JSON
+  updateCookieJson();
+  const cookie = $('#m-cookie-json').value.trim();
   const proxy = $('#m-proxy').value.trim();
   if (!cookie) return toast('请先输入 Cookie', 'err');
   toast('验证中…');
   try {
     const r = await api.post('/api/accounts/verify', { cookie, proxy });
     toast(r.valid ? '✅ Cookie 有效' : '❌ ' + r.message, r.valid ? 'good' : 'err');
-  } catch (e) { toast('验证失败', 'err'); }
+  } catch (e) { toast('验证失败：' + e.message, 'err'); }
 };
 
 $('#accModalSave').onclick = async () => {
+  updateCookieJson();
   const json = $('#m-cookie-json').value.trim();
-  const raw = $('#m-cookie').value.trim();
-  const cookie = json || raw;
   const body = {
     name: $('#m-name').value.trim() || '未命名账号',
-    cookie,
+    cookie: json,
     proxy: $('#m-proxy').value.trim(),
     enabled: $('#m-enabled').checked,
   };
-  if (!body.cookie && !editingAccId) return toast('Cookie 不能为空', 'err');
+  if (!body.cookie) return toast('Cookie 不能为空', 'err');
   try {
     if (editingAccId) await api.put('/api/accounts/' + editingAccId, body);
     else await api.post('/api/accounts', body);
     toast('保存成功', 'good');
     $('#accModal').hidden = true;
     loadAccounts(); loadDashboard();
-  } catch (e) { toast('保存失败', 'err'); }
+  } catch (e) { toast('保存失败：' + e.message, 'err'); }
 };
 
 async function delAcc(id) {
@@ -395,99 +394,364 @@ async function delAcc(id) {
   catch (e) { toast('删除失败', 'err'); }
 }
 
-/* ===== Cookie 编辑器 UI ===== */
+/* ===== Cookie 编辑器（3 Tab 联动） ===== */
 function resetCookieEditor() {
-  $('#cookieEditorRows').innerHTML = '';
+  __cookieFields = [];
+  __cookieSource = 'text';
   $('#m-cookie').value = '';
   $('#m-cookie-json').value = '';
-  $('#cookieCount').textContent = '0 个字段';
-  $('#cookieGenStatus').textContent = '';
+  renderCookieRows();
+  updateCookieJson();
+  setCookieStatus('parse', '准备就绪。粘贴后点“解析”。', 'ok');
+  setCookieStatus('edit', '还没字段，点上面“粘贴文本”或“添加字段”。', '');
+  setCookieStatus('json', '', '');
+  switchCookieTab('text');
 }
 
-function parseCookieText(text) {
-  text = text.trim();
+function setCookieStatus(pane, text, kind) {
+  const el = document.getElementById(pane === 'parse' ? 'cookieParseStatus' : pane === 'edit' ? 'cookieEditStatus' : 'cookieJsonStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.classList.remove('cookie-status-ok', 'cookie-status-warn', 'cookie-status-bad');
+  if (kind === 'ok') el.classList.add('cookie-status-ok');
+  else if (kind === 'warn') el.classList.add('cookie-status-warn');
+  else if (kind === 'bad') el.classList.add('cookie-status-bad');
+}
+
+function switchCookieTab(name) {
+  document.querySelectorAll('.cookie-tab').forEach(t => {
+    const active = t.dataset.tab === name;
+    t.classList.toggle('active', active);
+    t.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  document.querySelectorAll('.cookie-pane').forEach(p => {
+    p.classList.toggle('active', p.dataset.pane === name);
+  });
+  // 切换 Tab 时同步字段/JSON 状态
+  if (name === 'rows' && __cookieSource !== 'rows') {
+    // 从 text 跳到 rows，把当前文本重新解析一次
+    const fields = parseCookieString($('#m-cookie').value);
+    setCookieFields(fields, 'rows');
+  } else if (name === 'json') {
+    updateCookieJson();
+  }
+}
+
+function setCookieFields(fields, source) {
+  __cookieFields = fields.map(f => normalizeCookieField(f));
+  __cookieSource = source;
+  renderCookieRows();
+  updateCookieJson();
+  updateCookieCountBadge();
+}
+
+function updateCookieCountBadge() {
+  const valid = __cookieFields.filter(f => f.name && f.value).length;
+  const total = __cookieFields.length;
+  const badge = $('#cookieCountBadge');
+  if (badge) badge.textContent = String(valid);
+  const edit = $('#cookieEditStatus');
+  if (edit) {
+    if (total === 0) edit.textContent = '还没字段，点上面“粘贴文本”或“添加字段”。';
+    else if (valid === total) edit.textContent = `✅ 共 ${total} 个有效字段。`;
+    else edit.textContent = `共 ${total} 个字段，${valid} 个有效。`;
+  }
+}
+
+function renderCookieRows() {
+  const box = $('#cookieEditorRows');
+  if (!box) return;
+  if (!__cookieFields.length) { box.innerHTML = ''; return; }
+  box.innerHTML = __cookieFields.map((f, i) => renderCookieRow(f, i)).join('');
+  box.querySelectorAll('.cookie-row').forEach((row, i) => bindCookieRow(row, i));
+}
+
+function renderCookieRow(f, i) {
+  return `<div class="cookie-row${f.name && !f.value ? ' invalid' : ''}" data-idx="${i}">
+    <input type="text" class="cookie-name" placeholder="name" value="${esc(f.name)}" />
+    <input type="text" class="cookie-value" placeholder="value" value="${esc(f.value)}" />
+    <input type="text" class="cookie-domain" placeholder="domain" value="${esc(f.domain)}" list="cookie-domain-list" />
+    <div class="cookie-flags">
+      <select class="cookie-same-site" title="SameSite">
+        <option value="">none</option>
+        <option value="Strict">Strict</option>
+        <option value="Lax" selected>Lax</option>
+        <option value="None">None</option>
+      </select>
+      <label class="cookie-flag" title="secure"><input type="checkbox" class="cookie-secure" ${f.secure ? 'checked' : ''} />sec</label>
+      <label class="cookie-flag" title="httpOnly"><input type="checkbox" class="cookie-httponly" ${f.httpOnly ? 'checked' : ''} />http</label>
+    </div>
+    <button type="button" class="btn btn-ghost btn-sm cookie-row-del" title="删除该字段">×</button>
+  </div>`;
+}
+
+function bindCookieRow(row, idx) {
+  const onChange = () => {
+    const f = readCookieRow(row);
+    __cookieFields[idx] = f;
+    updateCookieJson();
+    updateCookieCountBadge();
+  };
+  row.querySelectorAll('input,select').forEach(el => {
+    el.addEventListener('input', onChange);
+    el.addEventListener('change', onChange);
+  });
+  row.querySelector('.cookie-row-del').onclick = () => {
+    __cookieFields.splice(idx, 1);
+    renderCookieRows();
+    updateCookieJson();
+    updateCookieCountBadge();
+  };
+}
+
+function readCookieRow(row) {
+  return normalizeCookieField({
+    name: row.querySelector('.cookie-name').value,
+    value: row.querySelector('.cookie-value').value,
+    domain: row.querySelector('.cookie-domain').value,
+    secure: row.querySelector('.cookie-secure').checked,
+    httpOnly: row.querySelector('.cookie-httponly').checked,
+    sameSite: row.querySelector('.cookie-same-site').value || 'Lax',
+  });
+}
+
+function normalizeCookieField(f) {
+  return {
+    name: (f.name || '').trim(),
+    value: f.value || '',
+    domain: (f.domain || '').trim() || '.douyin.com',
+    path: f.path || '/',
+    secure: !!f.secure,
+    httpOnly: !!f.httpOnly,
+    sameSite: f.sameSite || 'Lax',
+    expires: f.expires != null ? Number(f.expires) : -1,
+  };
+}
+
+function updateCookieJson() {
+  const json = $('#m-cookie-json');
+  if (!json) return;
+  const valid = __cookieFields.filter(f => f.name && f.value);
+  if (!valid.length) {
+    json.value = '';
+    setCookieStatus('json', '等待字段输入。', '');
+    return;
+  }
+  const cookies = valid.map(f => ({
+    name: f.name,
+    value: f.value,
+    domain: f.domain,
+    path: f.path || '/',
+    expires: f.expires != null ? Number(f.expires) : -1,
+    httpOnly: !!f.httpOnly,
+    secure: !!f.secure,
+    sameSite: f.sameSite || 'Lax',
+  }));
+  json.value = JSON.stringify(cookies, null, 2);
+  setCookieStatus('json', `已输出 ${cookies.length} 个字段。`, 'ok');
+}
+
+/* === 粘贴文本解析 === */
+function parseCookieString(text) {
   if (!text) return [];
+  text = String(text).trim();
+  if (!text) return [];
+
+  // 1) JSON 数组
   if (text.startsWith('[')) {
     try {
       const arr = JSON.parse(text);
       if (Array.isArray(arr)) {
-        return arr.map(c => ({
-          name: c.name || c.Name || '',
-          value: c.value || c.Value || '',
-          domain: c.domain || c.Domain || '.douyin.com'
-        }));
+        return arr.map(normalizeCookieField).filter(f => f.name);
       }
-    } catch(e) {}
+    } catch (e) { /* fall through */ }
   }
-  const cookies = [];
-  const parts = text.split(/[;\n]/);
-  for (const part of parts) {
-    const eq = part.indexOf('=');
-    if (eq < 0) continue;
-    const name = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim();
-    if (name && value) {
-      cookies.push({ name, value, domain: '.douyin.com' });
+
+  // 2) 标准 Netscape / Set-Cookie
+  // 按行 / 按 Set-Cookie 块分割
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  // 如果每行都是 Set-Cookie 完整格式（包含 Domain=/Path=/Expires=），按行处理
+  const looksLikeSetCookie = lines.some(l => /Domain=|Path=|Expires=/.test(l));
+  if (looksLikeSetCookie) {
+    const out = [];
+    for (const line of lines) {
+      const parsed = parseSetCookieLine(line);
+      if (parsed) out.push(parsed);
+    }
+    return out;
+  }
+
+  // 3) Netscape 单行/多行格式：name=value; name=value; ...
+  const out = [];
+  for (const part of text.split(/[;\n]+/)) {
+    const seg = part.trim();
+    if (!seg) continue;
+    const eq = seg.indexOf('=');
+    if (eq < 1) continue;
+    const name = seg.slice(0, eq).trim();
+    const value = seg.slice(eq + 1).trim();
+    if (!name) continue;
+    out.push({ name, value });
+  }
+  return out;
+}
+
+function parseSetCookieLine(line) {
+  // 抹掉可能的前缀 "Set-Cookie:"
+  let s = line.replace(/^Set-Cookie:\s*/i, '').trim();
+  if (!s) return null;
+  const parts = s.split(';').map(p => p.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const first = parts.shift();
+  const eq = first.indexOf('=');
+  if (eq < 1) return null;
+  const out = {
+    name: first.slice(0, eq).trim(),
+    value: first.slice(eq + 1).trim(),
+    domain: '.douyin.com',
+    path: '/',
+    secure: false,
+    httpOnly: false,
+    sameSite: 'Lax',
+    expires: -1,
+  };
+  for (const attr of parts) {
+    const idx = attr.indexOf('=');
+    if (idx < 0) {
+      const lower = attr.toLowerCase();
+      if (lower === 'secure') out.secure = true;
+      else if (lower === 'httponly') out.httpOnly = true;
+      continue;
+    }
+    const k = attr.slice(0, idx).trim().toLowerCase();
+    const v = attr.slice(idx + 1).trim();
+    if (k === 'domain') out.domain = v.startsWith('.') ? v : (v ? '.' + v : '.douyin.com');
+    else if (k === 'path') out.path = v || '/';
+    else if (k === 'expires') {
+      const t = Date.parse(v);
+      if (!Number.isNaN(t)) out.expires = Math.floor(t / 1000);
+    } else if (k === 'max-age') {
+      const n = parseInt(v, 10);
+      if (!Number.isNaN(n)) out.expires = Math.floor(Date.now() / 1000) + n;
+    } else if (k === 'samesite') {
+      const low = v.toLowerCase();
+      if (low === 'strict') out.sameSite = 'Strict';
+      else if (low === 'lax') out.sameSite = 'Lax';
+      else if (low === 'none') out.sameSite = 'None';
+    } else if (k === 'secure') {
+      out.secure = true;
+    } else if (k === 'httponly') {
+      out.httpOnly = true;
     }
   }
-  return cookies;
+  return out;
 }
 
-function populateCookieEditor(cookies) {
-  const box = $('#cookieEditorRows');
-  box.innerHTML = '';
-  if (!cookies.length) { addCookieRow(); return; }
-  cookies.forEach(c => addCookieRow(c.name || '', c.value || '', c.domain || '.douyin.com'));
-  updateCookieCount();
-}
+/* === Tab 联动 === */
+document.querySelectorAll('.cookie-tab').forEach(btn => {
+  btn.addEventListener('click', () => switchCookieTab(btn.dataset.tab));
+});
 
-function addCookieRow(name = '', value = '', domain = '.douyin.com') {
-  const div = document.createElement('div');
-  div.className = 'cookie-row';
-  div.innerHTML = `
-    <input type="text" class="cookie-name" placeholder="name" value="${esc(name)}" />
-    <input type="text" class="cookie-value" placeholder="value" value="${esc(value)}" />
-    <input type="text" class="cookie-domain" placeholder="domain" value="${esc(domain)}" />
-    <button type="button" class="btn btn-ghost btn-sm cookie-row-del" title="删除">×</button>
-  `;
-  div.querySelector('.cookie-row-del').onclick = () => { div.remove(); updateCookieCount(); };
-  $('#cookieEditorRows').appendChild(div);
-}
-
-function updateCookieCount() {
-  const n = $$('#cookieEditorRows .cookie-row').length;
-  $('#cookieCount').textContent = `${n} 个字段`;
-}
-
-function generateCookieJson() {
-  const rows = $$('#cookieEditorRows .cookie-row');
-  const cookies = [];
-  rows.forEach(row => {
-    const name = row.querySelector('.cookie-name').value.trim();
-    const value = row.querySelector('.cookie-value').value.trim();
-    const domain = row.querySelector('.cookie-domain').value.trim() || '.douyin.com';
-    if (name && value) {
-      cookies.push({ name, value, domain, path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction' });
+// 文本框输入时实时轻量提示；点击「解析」才落库
+let __parseDebounce;
+$('#m-cookie').addEventListener('input', () => {
+  clearTimeout(__parseDebounce);
+  const text = $('#m-cookie').value;
+  __parseDebounce = setTimeout(() => {
+    if (!text.trim()) {
+      setCookieStatus('parse', '支持 Netscape、Set-Cookie、JSON 数组。', 'ok');
+      return;
     }
+    const fields = parseCookieString(text);
+    if (fields.length) {
+      setCookieStatus('parse', `识别到 ${fields.length} 个字段，点「解析」应用。`, 'ok');
+    } else {
+      setCookieStatus('parse', '未能识别任何字段。检查格式。', 'bad');
+    }
+  }, 200);
+});
+
+$('#btn-cookie-parse').onclick = () => {
+  const text = $('#m-cookie').value;
+  const fields = parseCookieString(text);
+  if (!fields.length) {
+    setCookieStatus('parse', '未能识别任何字段。', 'bad');
+    return;
+  }
+  setCookieFields(fields, 'rows');
+  setCookieStatus('edit', `已导入 ${fields.length} 个字段。`, 'ok');
+  switchCookieTab('rows');
+};
+
+$('#btn-add-cookie-row').onclick = () => {
+  __cookieFields.push(normalizeCookieField({}));
+  renderCookieRows();
+  updateCookieJson();
+  updateCookieCountBadge();
+  // 聚焦新行
+  setTimeout(() => {
+    const rows = $$('#cookieEditorRows .cookie-row');
+    const last = rows[rows.length - 1];
+    if (last) last.querySelector('.cookie-name').focus();
+  }, 0);
+};
+
+$('#btn-cookie-dedupe').onclick = () => {
+  const seen = new Set();
+  const before = __cookieFields.length;
+  __cookieFields = __cookieFields.filter(f => {
+    const key = `${f.domain}::${f.path}::${f.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
-  $('#m-cookie-json').value = cookies.length ? JSON.stringify(cookies) : '';
-  const st = $('#cookieGenStatus');
-  if (st) st.textContent = cookies.length ? `✅ 已生成 ${cookies.length} 个字段` : '⚠️ 无有效字段';
-  return cookies.length;
-}
+  renderCookieRows();
+  updateCookieJson();
+  updateCookieCountBadge();
+  setCookieStatus('edit', `已去重：移除 ${before - __cookieFields.length} 条。`, 'ok');
+};
 
-$('#m-cookie').oninput = () => {
-  const text = $('#m-cookie').value.trim();
-  if (!text) return;
-  const cookies = parseCookieText(text);
-  if (cookies.length > 0) {
-    populateCookieEditor(cookies);
-    $('#cookieGenStatus').textContent = `已识别 ${cookies.length} 个字段，点击「生成 JSON」`;
+$('#btn-cookie-replace-dupe').onclick = () => {
+  // 保留最后一个同名同域的字段
+  const map = new Map();
+  for (const f of __cookieFields) {
+    map.set(`${f.domain}::${f.path}::${f.name}`, f);
+  }
+  __cookieFields = Array.from(map.values());
+  renderCookieRows();
+  updateCookieJson();
+  updateCookieCountBadge();
+  setCookieStatus('edit', `已合并：现 ${__cookieFields.length} 条。`, 'ok');
+};
+
+$('#btn-cookie-rebuild').onclick = () => {
+  // 从 JSON 文本重建字段
+  const text = $('#m-cookie-json').value;
+  const fields = parseCookieString(text);
+  if (!fields.length) {
+    setCookieStatus('json', 'JSON 不可解析或为空。', 'bad');
+    return;
+  }
+  setCookieFields(fields, 'rows');
+  setCookieStatus('json', `从 JSON 重建 ${fields.length} 个字段。`, 'ok');
+  switchCookieTab('rows');
+};
+
+$('#btn-cookie-format').onclick = () => {
+  try {
+    const obj = JSON.parse($('#m-cookie-json').value || '[]');
+    $('#m-cookie-json').value = JSON.stringify(obj, null, 2);
+    setCookieStatus('json', '已格式化。', 'ok');
+  } catch (e) {
+    setCookieStatus('json', 'JSON 解析失败：' + e.message, 'bad');
   }
 };
 
-$('#btn-add-cookie-row').onclick = () => addCookieRow();
-$('#btn-gen-cookie').onclick = () => generateCookieJson();
+// 手动修改 JSON 时（粘贴新 JSON 进来），尝试回填字段
+$('#m-cookie-json').addEventListener('input', () => {
+  // 不打断用户手输；只在值变化时刷新状态，不强制重建字段。
+  setCookieStatus('json', '检测到 JSON 编辑。保存时会用此处内容。', 'warn');
+});
 
 /* ===== 代理管理 ===== */
 let editingProxyId = null;

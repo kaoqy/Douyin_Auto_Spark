@@ -495,7 +495,7 @@ import struct
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-_PROXY_TIMEOUT = float(os.environ.get("DAS_PROXY_TIMEOUT", "15") or "15")
+_PROXY_TIMEOUT = float(os.environ.get("DAS_PROXY_TIMEOUT", "30") or "30")
 _GEO_HTTP_TARGET = ("ip-api.com", 80)
 _GEO_HTTP_PATH = (
     "/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,query"

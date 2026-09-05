@@ -43,7 +43,9 @@ jobs:
         run: |
           node --check app/static/app.js
           node --check tests/frontend-render.test.js
-          node --test tests/frontend-render.test.js
+          node --check tests/frontend-cookie-editor.test.js
+          npm install --no-save jsdom
+          node --test tests/frontend-render.test.js tests/frontend-cookie-editor.test.js
 
   docker-build:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
