@@ -104,7 +104,7 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
+            search_input = page.locator('input.semi-input[placeholder="搜索"]').first
             try:
                 await search_input.wait_for(state="visible", timeout=15000)
                 return {"valid": True, "message": "Cookie 有效"}
@@ -158,7 +158,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
+            search_input = page.locator('input.semi-input[placeholder="搜索"]').first
             try:
                 await search_input.wait_for(state="visible", timeout=15000)
             except Exception:
@@ -191,7 +191,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
 
             for item in conversation_items:
                 try:
-                    name_el = item.locator('[class*="name"], [class*="Name"], [class*="title"], [class*="Title"]').first()
+                    name_el = item.locator('[class*="name"], [class*="Name"], [class*="title"], [class*="Title"]').first
                     name = await name_el.text_content(timeout=2000)
                     if name and name.strip():
                         friends.append(name.strip())
@@ -283,7 +283,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            search_input = page.locator('input.semi-input[placeholder="搜索"]').first()
+            search_input = page.locator('input.semi-input[placeholder="搜索"]').first
             try:
                 await search_input.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
             except Exception:
@@ -328,8 +328,16 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
                 # 点击搜索结果进入对话
                 try:
-                    send_btn = search_result.locator('text=发消息, text=发私信').first()
-                    if await send_btn.is_visible(timeout=3000):
+                    send_btn = None
+                    for marker in ("发消息", "发私信"):
+                        try:
+                            candidate = search_result.get_by_text(marker, exact=False).first
+                            if await candidate.is_visible(timeout=2000):
+                                send_btn = candidate
+                                break
+                        except Exception:
+                            continue
+                    if send_btn:
                         await send_btn.click(timeout=5000)
                     else:
                         await search_result.click(timeout=5000)
@@ -345,7 +353,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 editor_input = page.locator(
                     '.messageEditorimChatEditorContainer '
                     '[data-slate-editor="true"][contenteditable="true"]'
-                ).first()
+                ).first
                 try:
                     await editor_input.wait_for(state="visible", timeout=10000)
                 except Exception:
@@ -412,7 +420,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
     """等待会话列表真正渲染"""
     try:
-        conversation_locator = page.locator('[class*="conversation"], [class*="Conversation"]').first()
+        conversation_locator = page.locator('[class*="conversation"], [class*="Conversation"]').first
         await conversation_locator.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
     except Exception:
         log.info("  [%s] 会话列表未在预期时间内出现，将依赖搜索重试兜底", account_name)
@@ -430,7 +438,7 @@ async def _search_conversation(
     for attempt in range(1, SEARCH_RETRY_LIMIT + 1):
         await search_input.fill("")
         try:
-            await page.locator(".SearchPanelitembox").first().wait_for(
+            await page.locator(".SearchPanelitembox").first.wait_for(
                 state="hidden", timeout=SEARCH_RESULT_TIMEOUT
             )
         except Exception:
@@ -441,7 +449,7 @@ async def _search_conversation(
         try:
             search_result = page.locator(".SearchPanelitembox").filter(
                 has=page.get_by_text(target_name, exact=True)
-            ).first()
+            ).first
             await search_result.wait_for(state="visible", timeout=SEARCH_RESULT_TIMEOUT)
             return search_result
         except Exception:
