@@ -43,7 +43,6 @@ PUBLIC_STATIC = ("/login.html", "/style.css", "/favicon.ico")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     database.init_db()
-    yiyan.init_yiyan_if_empty()
     scheduler.start_scheduler()
     log.info("抖音续火花管理面板已就绪（数据库：%s）", database.DB_PATH)
     yield
