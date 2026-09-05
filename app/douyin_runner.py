@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import database, yiyan
+from .message_templates import normalize_template
 from .douyin_cookie import parse_cookie_json
 
 log = logging.getLogger("das.runner")
@@ -93,8 +94,12 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
     async with async_playwright() as p:
         browser = None
         try:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(proxy=_parse_proxy_url(proxy))
+            launch_options = {"headless": True}
+            proxy_config = _parse_proxy_url(proxy)
+            if proxy_config:
+                launch_options["proxy"] = proxy_config
+            browser = await p.chromium.launch(**launch_options)
+            context = await browser.new_context()
             await context.add_cookies([c.to_playwright_cookie() for c in cookies])
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
@@ -138,8 +143,12 @@ async def fetch_friend_list(account: dict) -> list[str]:
     async with async_playwright() as p:
         browser = None
         try:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(proxy=_parse_proxy_url(proxy_url))
+            launch_options = {"headless": True}
+            proxy_config = _parse_proxy_url(proxy_url)
+            if proxy_config:
+                launch_options["proxy"] = proxy_config
+            browser = await p.chromium.launch(**launch_options)
+            context = await browser.new_context()
             await context.add_cookies([c.to_playwright_cookie() for c in cookies])
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
@@ -240,6 +249,13 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
         return result
 
     message_template = database.get_setting("message_template", "")
+    if message_template:
+        try:
+            message_template = normalize_template(message_template, "message_template")
+        except ValueError as exc:
+            result.status = "failed"
+            result.message = str(exc)
+            return result
     include_source = database.get_setting("yiyan_include_source", "1") == "1"
 
     async with async_playwright() as p:
@@ -248,12 +264,15 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             browser_path = os.environ.get("PLAYWRIGHT_BROWSER_PATH", "").strip() or None
             headless = os.environ.get("PLAYWRIGHT_HEADLESS", "1") != "0"
 
-            browser = await p.chromium.launch(
-                headless=headless,
-                **({"executablePath": browser_path} if browser_path else {}),
-            )
+            launch_options = {"headless": headless}
+            if browser_path:
+                launch_options["executable_path"] = browser_path
+            proxy_config = _parse_proxy_url(proxy_url)
+            if proxy_config:
+                launch_options["proxy"] = proxy_config
+            browser = await p.chromium.launch(**launch_options)
 
-            context = await browser.new_context(proxy=_parse_proxy_url(proxy_url))
+            context = await browser.new_context()
             await context.add_cookies([c.to_playwright_cookie() for c in cookies])
 
             page = await context.new_page()
@@ -318,24 +337,13 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 log.info("  [%s] 已打开私信：%s", account["name"], target_name)
                 await page.wait_for_timeout(2000)
 
-                # 定位输入框
-                editor_input = None
-                selectors = [
-                    '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]',
-                    '[data-slate-editor="true"][contenteditable="true"]',
-                    '[contenteditable="true"][data-slate-editor="true"]',
-                    '.public-DraftEditor-content',
-                    '[contenteditable="true"]',
-                ]
-                for sel in selectors:
-                    try:
-                        editor_input = page.locator(sel).first()
-                        if await editor_input.is_visible(timeout=3000):
-                            break
-                    except Exception:
-                        continue
-
-                if not editor_input:
+                editor_input = page.locator(
+                    '.messageEditorimChatEditorContainer '
+                    '[data-slate-editor="true"][contenteditable="true"]'
+                ).first()
+                try:
+                    await editor_input.wait_for(state="visible", timeout=10000)
+                except Exception:
                     log.warning("  [%s] 无法定位输入框", account["name"])
                     missing_names.append(target_name)
                     result.detail.append({
@@ -444,6 +452,8 @@ async def _search_conversation(
 
 async def _capture_screenshot(page: Any, name: str) -> None:
     """保存失败截图"""
+    if page is None or page.is_closed():
+        return
     try:
         SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in "-_" else "-" for c in name)

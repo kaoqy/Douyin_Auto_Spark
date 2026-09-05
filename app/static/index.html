@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>抖音续火花管理面板</title>
-  <link rel="stylesheet" href="/style.css?v=1.0.1" />
+  <link rel="stylesheet" href="/style.css?v=2.0.0" />
   <script>!function(){try{const t=localStorage.getItem('das-theme')||'system';document.documentElement.dataset.theme=t}catch(e){}}()</script>
 </head>
 <body>
@@ -19,23 +19,23 @@
         </div>
       </div>
       <nav>
-        <button class="nav-item active" data-view="dashboard">
+        <button class="nav-item active" data-view="dashboard" type="button" aria-current="page">
           <span class="nav-ico">📊</span>仪表盘
         </button>
-        <button class="nav-item" data-view="accounts">
+        <button class="nav-item" data-view="accounts" type="button">
           <span class="nav-ico">👥</span>账号管理
         </button>
-        <button class="nav-item" data-view="proxies">
+        <button class="nav-item" data-view="proxies" type="button">
           <span class="nav-ico">🌐</span>代理
         </button>
-        <button class="nav-item" data-view="friends">
+        <button class="nav-item" data-view="friends" type="button">
           <span class="nav-ico">💬</span>好友管理
         </button>
 
-        <button class="nav-item" data-view="logs">
+        <button class="nav-item" data-view="logs" type="button">
           <span class="nav-ico">📜</span>续火日志
         </button>
-        <button class="nav-item" data-view="settings">
+        <button class="nav-item" data-view="settings" type="button">
           <span class="nav-ico">⚙️</span>设置
         </button>
       </nav>
@@ -57,9 +57,9 @@
       <header class="topbar">
         <h1 id="view-title">仪表盘</h1>
         <div class="topbar-actions">
-          <button class="btn btn-ghost" id="btn-health" title="服务状态">●</button>
-          <button class="btn btn-ghost" id="btn-user" title="账户">👤</button>
-          <button class="btn btn-primary" id="btn-run">▶ 立即续火</button>
+          <button class="btn btn-ghost health-button" id="btn-health" type="button" title="服务状态" aria-label="检查服务状态"><span aria-hidden="true">●</span></button>
+          <button class="btn btn-ghost" id="btn-user" type="button" title="当前账户" aria-label="当前账户">👤</button>
+          <button class="btn btn-primary" id="btn-run" type="button">▶ 立即续火</button>
         </div>
       </header>
 
@@ -177,7 +177,7 @@
             <div class="card-head"><h2>Telegram 通知</h2></div>
             <div class="form">
               <label>启用 TG 推送<input type="checkbox" id="s-tg_enabled" /></label>
-              <label>Bot Token <input id="s-tg_bot_token" placeholder="123456:ABC-DEF..." autocomplete="off" /></label>
+              <label>Bot Token <input id="s-tg_bot_token" type="password" placeholder="已配置时留空表示不修改" autocomplete="new-password" /></label>
               <label>Chat / User ID <input id="s-tg_user_id" placeholder="987654321" /></label>
               <label>附带每日一言<input type="checkbox" id="s-tg_quote_enabled" /></label>
               <label>仅异常时推送<input type="checkbox" id="s-tg_only_on_change" /></label>
@@ -338,23 +338,6 @@ sessionid=abc123; ......' style="font-family:ui-monospace,Consolas,monospace;fon
     </div>
   </div>
 
-  <!-- 弹窗：一言编辑 -->
-  <div class="modal-mask" id="yiyanModal" hidden>
-    <div class="modal modal-sm">
-      <div class="modal-head"><h2>添加一言</h2><button class="modal-close" id="yiyanModalClose">×</button></div>
-      <div class="modal-body">
-        <div class="form">
-          <label>内容<textarea id="m-yiyan-text" rows="3" placeholder="输入一言内容"></textarea></label>
-          <label>出处<input id="m-yiyan-source" placeholder="如：火影忍者" /></label>
-        </div>
-      </div>
-      <div class="modal-foot">
-        <button class="btn btn-ghost" id="yiyanModalCancel">取消</button>
-        <button class="btn btn-primary" id="yiyanModalSave">保存</button>
-      </div>
-    </div>
-  </div>
-
   <!-- 弹窗：代理编辑 -->
   <div class="modal-mask" id="proxyModal" hidden>
     <div class="modal">
@@ -403,7 +386,7 @@ sessionid=abc123; ......' style="font-family:ui-monospace,Consolas,monospace;fon
     </div>
   </div>
 
-  <div class="toast" id="toast"></div>
-  <script src="/app.js?v=1.0.1"></script>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js?v=2.0.0"></script>
 </body>
 </html>

@@ -146,6 +146,13 @@ class TestSettingsAPI:
         })
         assert resp.status_code == 200
 
+    def test_reject_unknown_message_template_placeholder(self, authenticated_client):
+        resp = authenticated_client.put("/api/settings", json={
+            "message_template": "你好 {{unknown}}",
+        })
+        assert resp.status_code == 400
+        assert "未识别的占位符" in resp.json()["detail"]
+
 
 class TestLogsAPI:
     def test_list_logs_empty(self, authenticated_client):

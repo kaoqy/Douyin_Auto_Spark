@@ -2,18 +2,46 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 
-function handleResp(r) {
-  if (r.status === 401) { location.href = '/login.html'; throw new Error('未登录'); }
-  if (!r.ok) throw new Error('请求失败 ' + r.status);
-  return r;
+async function handleResp(r) {
+  if (r.status === 401) {
+    location.href = '/login.html';
+    throw new Error('登录已失效');
+  }
+  if (!r.ok) {
+    let message = `请求失败 (${r.status})`;
+    try {
+      const data = await r.json();
+      message = data.detail || data.message || message;
+    } catch (e) { }
+    throw new Error(message);
+  }
+  if (r.status === 204) return {};
+  try { return await r.json(); }
+  catch (e) { return {}; }
 }
 
 const api = {
-  get: (p) => fetch(p).then(r => handleResp(r)).then(r => r.json()),
-  post: (p, b) => fetch(p, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).then(r => handleResp(r)).then(r => r.json()),
-  put: (p, b) => fetch(p, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b) }).then(r => handleResp(r)).then(r => r.json()),
-  del: (p) => fetch(p, { method: 'DELETE' }).then(r => handleResp(r)).then(r => r.json()),
+  get: (p) => fetch(p, { credentials: 'same-origin' }).then(handleResp),
+  post: (p, b) => fetch(p, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).then(handleResp),
+  put: (p, b) => fetch(p, { method: 'PUT', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(b || {}) }).then(handleResp),
+  del: (p) => fetch(p, { method: 'DELETE', credentials: 'same-origin' }).then(handleResp),
 };
+
+function asArray(value, key) {
+  if (Array.isArray(value)) return value;
+  if (value && Array.isArray(value[key])) return value[key];
+  return [];
+}
+
+function setLoading(el, text = '加载中…') {
+  if (el) el.innerHTML = `<div class="empty-state loading-state">${esc(text)}</div>`;
+}
+
+function setError(el, message, retry) {
+  if (!el) return;
+  el.innerHTML = `<div class="empty-state error-state"><strong>加载失败</strong><span>${esc(message || '请稍后重试')}</span>${retry ? '<button class="btn btn-ghost btn-sm" type="button">重试</button>' : ''}</div>`;
+  if (retry) el.querySelector('button').onclick = retry;
+}
 
 /* ===== Toast ===== */
 let toastTimer;
@@ -56,8 +84,12 @@ themeSel.onchange = () => {
 const VIEW_TITLES = { dashboard: '仪表盘', accounts: '账号管理', proxies: '代理', friends: '好友管理', logs: '续火日志', settings: '设置' };
 $$('.nav-item').forEach(btn => {
   btn.onclick = () => {
-    $$('.nav-item').forEach(b => b.classList.remove('active'));
+    $$('.nav-item').forEach(b => {
+      b.classList.remove('active');
+      b.removeAttribute('aria-current');
+    });
     btn.classList.add('active');
+    btn.setAttribute('aria-current', 'page');
     $$('.view').forEach(v => v.hidden = true);
     $('#view-' + btn.dataset.view).hidden = false;
     $('#view-title').textContent = VIEW_TITLES[btn.dataset.view];
@@ -127,7 +159,7 @@ async function loadDashboard() {
 function card(lbl, num, cls, suffix = '') {
   const clsMap = { ok: 'ok', bad: 'bad', green: 'ok', blue: 'blue', purple: 'purple', orange: 'orange', acc: 'acc' };
   const statCls = clsMap[cls] || '';
-  return `<div class="stat ${statCls}"><div class="num">${num}<span style="font-size:14px">${suffix}</span></div><div class="lbl">${lbl}</div></div>`;
+  return `<div class="stat ${statCls}"><div class="num">${esc(num)}<span style="font-size:14px">${esc(suffix)}</span></div><div class="lbl">${esc(lbl)}</div></div>`;
 }
 
 function renderRecentTasks(tasks) {
@@ -210,17 +242,18 @@ $('#btn-quote-push').onclick = async () => {
 /* ===== 账号管理 ===== */
 let editingAccId = null;
 async function loadAccounts() {
+  const tb = $('#accTable tbody');
+  if (tb) tb.innerHTML = '<tr><td colspan="6"><div class="empty-state loading-state">加载账号中…</div></td></tr>';
   try {
     const data = await api.get('/api/accounts');
-    const accounts = data.accounts || [];
+    const accounts = asArray(data, 'accounts');
     window.__accounts = accounts;
-    const tb = $('#accTable tbody');
     tb.innerHTML = accounts.length ? accounts.map(a => `
       <tr data-id="${a.id}">
         <td><input type="checkbox" class="acc-check" data-id="${a.id}" /></td>
         <td>${esc(a.name)}</td>
         <td>${a.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge gray">停用</span>'} · ${statusBadge(a.last_status)}</td>
-        <td>${a.proxy ? '<span class="badge">' + esc(a.proxy) + '</span>' : '<span class="badge gray">直连</span>'}</td>
+        <td>${a.proxy ? '<span class="badge">SOCKS5 代理</span>' : '<span class="badge gray">直连</span>'}</td>
         <td>${a.last_run || '从未'}</td>
         <td>
           <button class="btn btn-ghost btn-sm" onclick="verifyAcc(${a.id})">验证</button>
@@ -232,7 +265,10 @@ async function loadAccounts() {
     $('#accCheckAll').checked = false;
     updateSelCount();
     $('#btn-spark-selected').disabled = true;
-  } catch (e) { toast('加载账号失败', 'err'); }
+  } catch (e) {
+    if (tb) tb.innerHTML = `<tr><td colspan="6"><div class="empty-state error-state">${esc(e.message || '账号加载失败')}</div></td></tr>`;
+    toast('加载账号失败', 'err');
+  }
 }
 
 function getSelectedIds() { return Array.from(document.querySelectorAll('.acc-check:checked')).map(c => +c.dataset.id); }
@@ -281,7 +317,7 @@ async function toggleAccEnabled(id) {
 
 async function populateProxySelect(sel, selectedUrl = '') {
   let proxies = [];
-  try { const list = await api.get('/api/proxies'); proxies = list.filter(p => p.enabled !== false); } catch(e) {}
+  try { const list = await api.get('/api/proxies'); proxies = asArray(list, 'proxies').filter(p => p.enabled !== false); } catch(e) {}
   const opt = (v, t) => `<option value="${esc(v)}"${v === selectedUrl ? ' selected' : ''}>${esc(t)}</option>`;
   sel.innerHTML = opt('', '自动 / 直连') + proxies.map(p => opt(p.url, p.label || p.ip)).join('');
 }
@@ -454,10 +490,11 @@ $('#btn-add-cookie-row').onclick = () => addCookieRow();
 $('#btn-gen-cookie').onclick = () => generateCookieJson();
 
 /* ===== 代理管理 ===== */
-editingProxyId = null;
+let editingProxyId = null;
 async function loadProxies() {
+  setLoading($('#proxyList'), '加载代理节点中…');
   try {
-    const list = await api.get('/api/proxies');
+    const list = asArray(await api.get('/api/proxies'), 'proxies');
     $('#proxyListHint').textContent = list.length ? '' : '添加后，账号管理里可为每个账号指定对应代理（不同节点并行续火）。';
     const box = $('#proxyList');
     if (!list.length) {
@@ -466,7 +503,7 @@ async function loadProxies() {
     }
     box.innerHTML = list.map(p => {
       const flag = flagEmoji(p.geo_country_code);
-      const host = p.ip || ((p.url || '').replace(/socks5.*@/, '').replace(/^socks5:\/\//, ''));
+      const host = p.ip || '已配置';
       const has = p.ip || (p.url || '').includes('socks5');
       const geoParts = [p.geo_country, p.geo_region, p.geo_city].filter(Boolean);
       const geoHtml = geoParts.length ? `<div class="proxy-geo-line">${flag} ${esc(geoParts.join(' · '))}${p.geo_ip ? ' · ' + esc(p.geo_ip) : ''}</div>` : (has ? '<div class="proxy-geo-line"><span class="badge gray">归属地未识别</span></div>' : '');
@@ -476,7 +513,7 @@ async function loadProxies() {
           <div class="proxy-flag">${flag}</div>
           <div class="proxy-main">
             <div class="proxy-name">${esc(p.label || (p.geo_country ? p.geo_country + ' ' + p.geo_region : host))} ${p.enabled === false ? '<span class="badge gray">停用</span>' : ''}</div>
-            <div class="proxy-meta">${esc(has ? host : '请编辑补全')}${p.port ? ':' + p.port : ''}</div>
+            <div class="proxy-meta">${has ? 'SOCKS5 节点' : '请编辑补全'}${p.port ? ' · 端口 ' + esc(p.port) : ''}</div>
           </div>
           <div class="proxy-actions">
             <button class="btn btn-ghost btn-sm" onclick="testProxy(${p.id})">测试</button>
@@ -488,7 +525,7 @@ async function loadProxies() {
         <div class="proxy-test" id="ptest-${p.id}">${testHtml}</div>
       </div>`;
     }).join('');
-  } catch (e) { toast('加载代理失败', 'err'); }
+  } catch (e) { setError($('#proxyList'), e.message, loadProxies); toast('加载代理失败', 'err'); }
 }
 
 function proxyTestHtml(p) {
@@ -571,7 +608,8 @@ function openProxyModal(id = null) {
   $('#p-geo').innerHTML = ''; $('#p-geo-status').textContent = '';
   $('#p-pwd').placeholder = id ? '留空表示不修改' : '';
   if (id) {
-    api.get('/api/proxies').then(list => {
+    api.get('/api/proxies').then(data => {
+      const list = asArray(data, 'proxies');
       const p = list.find(x => x.id === id);
       if (!p) return;
       if (p.ip) $('#p-ip').value = p.ip;
@@ -605,7 +643,7 @@ window.delProxy = async (id) => {
 $('#btn-proxy-test-all').onclick = async () => {
   const btn = $('#btn-proxy-test-all');
   try {
-    const list = await api.get('/api/proxies');
+    const list = asArray(await api.get('/api/proxies'), 'proxies');
     btn.disabled = true; btn.textContent = `测速中 0/${list.length}`;
     for (let i = 0; i < list.length; i++) { btn.textContent = `测速中 ${i + 1}/${list.length}`; await testProxy(list[i].id); }
     btn.textContent = '🧪 测试全部'; btn.disabled = false;
@@ -618,7 +656,7 @@ let editingFriendId = null;
 
 async function loadFriends() {
   try {
-    const accounts = (await api.get('/api/accounts')).accounts || [];
+    const accounts = asArray(await api.get('/api/accounts'), 'accounts');
     const select = $('#friends-account-select');
     select.innerHTML = '<option value="">选择账号</option>' +
       accounts.filter(a => a.enabled).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
@@ -635,7 +673,7 @@ async function renderFriends() {
   if (!currentFriendAccountId) { $('#friendsTable tbody').innerHTML = '<tr><td colspan="4" style="color:var(--muted)">请先选择账号</td></tr>'; return; }
   try {
     const data = await api.get('/api/targets?account_id=' + currentFriendAccountId);
-    const targets = data.targets || [];
+    const targets = asArray(data, 'targets');
     const tb = $('#friendsTable tbody');
     tb.innerHTML = targets.length ? targets.map(t => `
       <tr>
@@ -719,7 +757,7 @@ async function loadLogs(reset = true) {
     const status = $('#logFilter').value;
     const kw = ($('#logSearch').value || '').trim().toLowerCase();
     const data = await api.get('/api/logs?limit=200' + (status ? '&status=' + status : ''));
-    const logs = (data.logs || []).filter(l => {
+    const logs = asArray(data, 'logs').filter(l => {
       if (!kw) return true;
       return ((l.account_name || '') + ' ' + (l.message || '') + ' ' + (l.target_name || '')).toLowerCase().includes(kw);
     });
@@ -740,7 +778,11 @@ async function loadLogs(reset = true) {
       </div>`;
     }).join('');
     countBox.textContent = `共 ${logs.length} 条`;
-  } catch (e) { toast('加载日志失败', 'err'); }
+  } catch (e) {
+    setError($('#logList'), e.message, () => loadLogs(true));
+    $('#logCount').textContent = '';
+    toast('加载日志失败', 'err');
+  }
 }
 $('#btn-refresh-logs').onclick = loadLogs;
 $('#logSearch').addEventListener('input', () => loadLogs(false));
@@ -757,7 +799,8 @@ async function loadSettings() {
     const data = await api.get('/api/settings');
     const s = data.settings || {};
     $('#s-tg_enabled').checked = (s.tg_enabled || '0') === '1';
-    $('#s-tg_bot_token').value = s.tg_bot_token || '';
+    $('#s-tg_bot_token').value = '';
+    $('#s-tg_bot_token').placeholder = s.tg_bot_token ? '已配置，留空表示不修改' : '请输入 Bot Token';
     $('#s-tg_user_id').value = s.tg_user_id || '';
     $('#s-tg_quote_enabled').checked = (s.tg_quote_enabled || '0') === '1';
     $('#s-tg_only_on_change').checked = (s.tg_only_on_change || '0') === '1';
@@ -781,9 +824,8 @@ async function loadSettings() {
 function collectSettings() {
   const val = (id, dflt = '') => { const el = $('#' + id); return el ? el.value : dflt; };
   const chk = (id) => { const el = $('#' + id); return el && el.checked ? '1' : '0'; };
-  return {
+  const settings = {
     tg_enabled: chk('s-tg_enabled'),
-    tg_bot_token: val('s-tg_bot_token').trim(),
     tg_user_id: val('s-tg_user_id').trim(),
     tg_quote_enabled: chk('s-tg_quote_enabled'),
     tg_only_on_change: chk('s-tg_only_on_change'),
@@ -802,6 +844,9 @@ function collectSettings() {
     yiyan_include_source: val('s-yiyan_include_source'),
     log_retention_days: val('s-log_retention_days', '30'),
   };
+  const token = val('s-tg_bot_token').trim();
+  if (token) settings.tg_bot_token = token;
+  return settings;
 }
 
 $('#btn-save-all').onclick = async () => {
@@ -816,10 +861,6 @@ $('#btn-save-schedule').onclick = async () => {
 };
 $('#btn-save-template').onclick = async () => {
   try { await api.put('/api/settings', { message_template: $('#s-message_template').value, yiyan_include_source: $('#s-yiyan_include_source').value }); toast('模板已保存', 'good'); }
-  catch (e) { toast('保存失败', 'err'); }
-};
-$('#btn-save-retention').onclick = async () => {
-  try { await api.put('/api/settings', { log_retention_days: $('#s-log_retention_days').value }); toast('设置已保存', 'good'); }
   catch (e) { toast('保存失败', 'err'); }
 };
 $('#btn-test-tg').onclick = async () => {
@@ -847,6 +888,7 @@ $('#runModalClose').onclick = () => $('#runModal').hidden = true;
 let pollTimer;
 function pollRun() {
   clearTimeout(pollTimer);
+  clearInterval(pollTimer);
   pollTimer = setInterval(async () => {
     try {
       const s = await api.get('/api/tasks/run');
@@ -863,7 +905,11 @@ function pollRun() {
         if (lastTask) { $('#runInfo').textContent = `✅ 完成（${lastTask.status}）`; addRunLine(`完成：${lastTask.message || ''}`); }
         loadDashboard(); loadAccounts(); loadLogs();
       }
-    } catch (e) { clearInterval(pollTimer); }
+    } catch (e) {
+      clearInterval(pollTimer);
+      $('#runInfo').textContent = '运行状态获取失败';
+      addRunLine(e.message || '网络请求失败');
+    }
   }, 1500);
 }
 
