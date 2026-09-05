@@ -27,6 +27,12 @@ function toast(msg, type = '') {
 
 /* ===== 工具 ===== */
 function esc(s) { return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function flagEmoji(code) {
+  if (!code || code.length !== 2) return '🌐';
+  const base = 0x1F1E6;
+  const chars = [...code.toUpperCase()].map(c => String.fromCodePoint(base + c.charCodeAt(0) - 65));
+  return chars.join('');
+}
 function timeAgo(t) {
   if (!t) return '从未';
   const d = new Date(t);
@@ -189,7 +195,10 @@ async function loadQuote() {
 $('#btn-quote-refresh').onclick = () => loadQuote(true);
 $('#btn-quote-push').onclick = async () => {
   toast('推送中…');
-  try { toast('已推送到 TG', 'good'); } catch (e) { toast('推送失败', 'err'); }
+  try {
+    await api.post('/api/yiyan/push', {});
+    toast('已推送到 TG', 'good');
+  } catch (e) { toast('推送失败', 'err'); }
 };
 
 /* ===== 账号管理 ===== */
@@ -392,10 +401,11 @@ async function loadProxies() {
       return;
     }
     box.innerHTML = list.map(p => {
-      const flag = '🌐';
+      const flag = flagEmoji(p.geo_country_code);
       const host = p.ip || ((p.url || '').replace(/socks5.*@/, '').replace(/^socks5:\/\//, ''));
       const has = p.ip || (p.url || '').includes('socks5');
-      const geoHtml = p.geo_country ? `<div class="proxy-geo-line">${flag} ${esc(p.geo_country)} ${esc(p.geo_region || '')}${p.geo_ip ? ' · ' + esc(p.geo_ip) : ''}</div>` : (has ? '<div class="proxy-geo-line"><span class="badge gray">归属地未识别</span></div>' : '');
+      const geoParts = [p.geo_country, p.geo_region, p.geo_city].filter(Boolean);
+      const geoHtml = geoParts.length ? `<div class="proxy-geo-line">${flag} ${esc(geoParts.join(' · '))}${p.geo_ip ? ' · ' + esc(p.geo_ip) : ''}</div>` : (has ? '<div class="proxy-geo-line"><span class="badge gray">归属地未识别</span></div>' : '');
       const testHtml = proxyTestHtml(p);
       return `<div class="proxy-card ${p.enabled === false ? 'proxy-disabled' : ''}">
         <div class="proxy-top">
@@ -807,8 +817,11 @@ $('#btn-save-retention').onclick = async () => {
 };
 $('#btn-test-tg').onclick = async () => {
   toast('发送测试中…');
-  try { await api.post('/api/settings', collectSettings()); toast('测试消息已发送', 'good'); }
-  catch (e) { toast('发送失败', 'err'); }
+  try {
+    const r = await api.post('/api/settings/test-tg', {});
+    if (r.ok) toast('测试消息已发送', 'good');
+    else toast('发送失败: ' + (r.message || ''), 'err');
+  } catch (e) { toast('发送失败', 'err'); }
 };
 
 /* ===== 立即续火 + 运行状态轮询 ===== */

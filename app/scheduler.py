@@ -9,7 +9,7 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from . import database
+from . import database, tg_sender
 from .anti_ban import AntiBanPolicy
 from .douyin_runner import run_account_spark_sync, AccountResult
 
@@ -128,6 +128,13 @@ def run_spark_task(trigger_type: str = "manual", account_ids: list[int] | None =
         })
 
         log.info("续火任务完成：成功 %d / 失败 %d", success, fail)
+
+        # TG 推送
+        try:
+            tg_sender.push_summary(summary)
+        except Exception as e:
+            log.warning("TG 推送失败：%s", e)
+
         return summary
 
     except Exception as exc:

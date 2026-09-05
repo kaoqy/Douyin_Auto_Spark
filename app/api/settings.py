@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter
 
-from .. import database, scheduler
+from .. import database, scheduler, tg_sender
 
 log = logging.getLogger("das.api.settings")
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -26,3 +26,10 @@ def update_settings(body: dict[str, Any]):
     if "schedule_cron" in settings or "schedule_enabled" in settings:
         scheduler.reload_schedule()
     return {"message": "设置已保存"}
+
+
+@router.post("/test-tg")
+def test_tg_push():
+    """发送测试 TG 消息"""
+    result = tg_sender.test_push()
+    return result

@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from .. import database
+from .. import database, tg_sender
 from ..yiyan import pick_random_yiyan, init_yiyan_if_empty
 
 log = logging.getLogger("das.api.yiyan")
@@ -59,3 +59,16 @@ def import_default():
     """重新导入默认一言库"""
     init_yiyan_if_empty()
     return {"imported": database.count_yiyan(), "message": "默认一言库已导入"}
+
+
+@router.post("/push")
+def push_yiyan():
+    """推送每日一言到 TG"""
+    item = pick_random_yiyan()
+    if not item:
+        raise HTTPException(status_code=400, detail="一言库为空")
+    ok = tg_sender.push_quote(item.get("hitokoto", ""), item.get("source", ""))
+    if ok:
+        return {"message": "已推送到 TG"}
+    else:
+        raise HTTPException(status_code=500, detail="推送失败")

@@ -138,6 +138,7 @@ def init_db() -> None:
             url TEXT DEFAULT '',
             geo_country TEXT DEFAULT '',
             geo_region TEXT DEFAULT '',
+            geo_city TEXT DEFAULT '',
             geo_country_code TEXT DEFAULT '',
             geo_ip TEXT DEFAULT '',
             enabled INTEGER DEFAULT 1,
@@ -157,6 +158,16 @@ def init_db() -> None:
     """)
     conn.commit()
     _seed_defaults(conn)
+    _migrate_db(conn)
+
+
+def _migrate_db(conn: sqlite3.Connection) -> None:
+    """数据库迁移（增量添加字段等）"""
+    # 添加 geo_city 字段（v1.0 后新增）
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(proxies)").fetchall()]
+    if "geo_city" not in cols:
+        conn.execute("ALTER TABLE proxies ADD COLUMN geo_city TEXT DEFAULT ''")
+        conn.commit()
 
 
 def _seed_defaults(conn: sqlite3.Connection) -> None:
@@ -555,8 +566,8 @@ def import_yiyan_batch(entries: list[dict]) -> int:
 def add_proxy(data: dict) -> int:
     conn = get_conn()
     cur = conn.execute(
-        """INSERT INTO proxies (label, ip, port, username, password, url, geo_country, geo_region, geo_country_code, geo_ip, enabled, remark)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        """INSERT INTO proxies (label, ip, port, username, password, url, geo_country, geo_region, geo_city, geo_country_code, geo_ip, enabled, remark)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             data.get("label", ""),
             data.get("ip", ""),
@@ -566,6 +577,7 @@ def add_proxy(data: dict) -> int:
             data.get("url", ""),
             data.get("geo_country", ""),
             data.get("geo_region", ""),
+            data.get("geo_city", ""),
             data.get("geo_country_code", ""),
             data.get("geo_ip", ""),
             1 if data.get("enabled", True) else 0,
@@ -578,7 +590,7 @@ def add_proxy(data: dict) -> int:
 
 def update_proxy(proxy_id: int, **kwargs: Any) -> bool:
     conn = get_conn()
-    allowed = {"label", "ip", "port", "username", "password", "url", "geo_country", "geo_region", "geo_country_code", "geo_ip", "enabled", "remark", "last_test", "last_latency_ms", "last_test_at", "last_test_message"}
+    allowed = {"label", "ip", "port", "username", "password", "url", "geo_country", "geo_region", "geo_city", "geo_country_code", "geo_ip", "enabled", "remark", "last_test", "last_latency_ms", "last_test_at", "last_test_message"}
     sets = []
     vals = []
     for k, v in kwargs.items():

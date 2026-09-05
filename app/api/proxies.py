@@ -113,12 +113,20 @@ def test_proxy(proxy_id: int):
     if ok and not message.endswith("ms"):
         message += f" · {elapsed_ms} ms"
     
-    database.update_proxy(proxy_id, {
+    # 保存测试结果和归属地信息
+    update_fields = {
         "last_test": "ok" if ok else "fail",
         "last_latency_ms": elapsed_ms,
         "last_test_at": database._now(),
         "last_test_message": message,
-    })
+    }
+    if ok:
+        update_fields["geo_country"] = result.get("country", "")
+        update_fields["geo_region"] = result.get("region", "")
+        update_fields["geo_city"] = result.get("city", "")
+        update_fields["geo_country_code"] = result.get("country_code", "")
+        update_fields["geo_ip"] = result.get("ip", "")
+    database.update_proxy(proxy_id, update_fields)
     
     return {"ok": ok, "message": message, "latency_ms": elapsed_ms, "geo": result}
 
@@ -147,4 +155,15 @@ def detect_url(data: dict):
         raise HTTPException(400, "缺少链接或 IP")
     
     result = detect_geo_sync(url)
+    
+    # 如果传了 proxy_id，顺便保存归属地
+    if pid and result.get("ok"):
+        database.update_proxy(int(pid), {
+            "geo_country": result.get("country", ""),
+            "geo_region": result.get("region", ""),
+            "geo_city": result.get("city", ""),
+            "geo_country_code": result.get("country_code", ""),
+            "geo_ip": result.get("ip", ""),
+        })
+    
     return {k: v for k, v in result.items() if k != "_t"}

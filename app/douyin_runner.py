@@ -123,7 +123,7 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
 
 
 async def fetch_friend_list(account: dict) -> list[str]:
-    """自动获取抖音聊天页的好友列表"""
+    """自动获取抖音聊天页的好友列表（带重试和多种选择器）"""
     from playwright.async_api import async_playwright
 
     proxy_url = account.get("proxy", "") or ""
@@ -148,11 +148,33 @@ async def fetch_friend_list(account: dict) -> list[str]:
             try:
                 await search_input.wait_for(state="visible", timeout=15000)
             except Exception:
+                log.warning("搜索框未出现，无法获取好友列表")
                 return []
 
+            # 等待会话列表渲染
             await page.wait_for_timeout(3000)
 
-            conversation_items = page.locator('[class*="conversationItem"], [class*="ConversationItem"], .SearchPanelitembox, [class*="chatItem"]').all()
+            # 多种选择器依次尝试
+            selectors = [
+                '[class*="conversationItem"]',
+                '[class*="ConversationItem"]',
+                '.SearchPanelitembox',
+                '[class*="chatItem"]',
+                '[class*="session-item"]',
+                '[class*="sessionItem"]',
+            ]
+
+            conversation_items = []
+            for sel in selectors:
+                try:
+                    items = page.locator(sel).all()
+                    if items:
+                        conversation_items = items
+                        log.info("使用选择器 %s 找到 %d 个会话", sel, len(items))
+                        break
+                except Exception:
+                    continue
+
             for item in conversation_items:
                 try:
                     name_el = item.locator('[class*="name"], [class*="Name"], [class*="title"], [class*="Title"]').first()
@@ -162,7 +184,9 @@ async def fetch_friend_list(account: dict) -> list[str]:
                 except Exception:
                     pass
 
+            # 兜底：如果还没拿到，尝试取所有可见文本
             if not friends:
+                log.info("主选择器未命中，尝试兜底文本提取")
                 all_items = page.locator('.SearchPanelitembox, [class*="conversation"], [class*="chatItem"]').all()
                 for item in all_items:
                     try:
@@ -178,6 +202,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
             if browser:
                 await browser.close()
 
+    # 去重
     return list(dict.fromkeys(friends))
 
 
@@ -447,43 +472,55 @@ def fetch_friend_list_sync(account: dict) -> list[str]:
 # ==================== 代理测试与归属地检测 ====================
 
 async def _test_proxy_async(proxy_url: str) -> dict:
-    """异步测试代理并获取归属地"""
-    from playwright.async_api import async_playwright
-
+    """异步测试代理并获取归属地（通过 ip-api.com）"""
     if not proxy_url:
         return {"ok": False, "message": "代理 URL 为空"}
 
-    async with async_playwright() as p:
-        browser = None
-        try:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(proxy=_parse_proxy_url(proxy_url))
-            page = await context.new_page()
-            
-            # 使用 httpbin 测试
-            await page.goto("https://httpbin.org/ip", wait_until="domcontentloaded", timeout=15000)
-            await page.wait_for_timeout(2000)
-            
-            text = await page.evaluate("() => document.body.innerText")
-            
-            try:
-                data = json.loads(text)
-                return {
-                    "ok": True,
-                    "country": "",
-                    "region": "",
-                    "country_code": "",
-                    "ip": data.get("origin", ""),
-                    "message": f"✅ 测试成功 ({data.get('origin', '')})",
-                }
-            except json.JSONDecodeError:
-                return {"ok": False, "message": "无法解析响应"}
-                
-        except Exception as e:
-            return {"ok": False, "message": f"测试失败: {e}"}
-        finally:
-            if browser:
-                await browser.close()
+    proxy = _parse_proxy_url(proxy_url)
+    if not proxy:
+        return {"ok": False, "message": "代理 URL 解析失败"}
+
+    try:
+        import urllib.request
+        # 构造代理 handler
+        proxy_handler = urllib.request.ProxyHandler({
+            "http": proxy_url,
+            "https": proxy_url,
+        })
+        opener = urllib.request.build_opener(proxy_handler)
+        opener.addheaders = [("User-Agent", "Mozilla/5.0")]
+        urllib.request.install_opener(opener)
+
+        # ip-api.com 返回 JSON，包含 country/region/city 等
+        req = urllib.request.Request(
+            "http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,query"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+
+        if data.get("status") != "success":
+            return {"ok": False, "message": "归属地查询失败"}
+
+        ip = data.get("query", "")
+        country = data.get("country", "")
+        country_code = data.get("countryCode", "")
+        region = data.get("regionName", "")
+        city = data.get("city", "")
+
+        parts = [p for p in [country, region, city] if p]
+        location_str = " · ".join(parts) if parts else "未知"
+
+        return {
+            "ok": True,
+            "ip": ip,
+            "country": country,
+            "country_code": country_code,
+            "region": region,
+            "city": city,
+            "message": f"✅ {location_str} ({ip})",
+        }
+    except Exception as e:
+        return {"ok": False, "message": f"测试失败: {e}"}
 
 
 def test_proxy_sync(proxy_url: str) -> dict:
