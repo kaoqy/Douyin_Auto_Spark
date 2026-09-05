@@ -76,7 +76,7 @@ def needs_init():
 
 
 @router.post("/change-password")
-def change_password(body: dict, request: Request):
+def change_password(body: dict, request: Request, response: Response):
     token = request.cookies.get(auth.COOKIE_NAME, "")
     user = auth.get_current_user(token)
     if not user:
@@ -93,4 +93,5 @@ def change_password(body: dict, request: Request):
     auth.change_password(user["user_id"], new_password)
     # 使旧会话失效
     auth.logout(token)
+    response.delete_cookie(auth.COOKIE_NAME)
     return {"message": "密码修改成功，请重新登录"}

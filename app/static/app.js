@@ -856,7 +856,7 @@ $('#btn-save-all').onclick = async () => {
   catch (e) { status.textContent = '保存失败'; status.className = 'save-status'; }
 };
 $('#btn-save-schedule').onclick = async () => {
-  try { await api.put('/api/tasks/schedule', { enabled: $('#s-schedule_enabled').checked, cron: $('#s-schedule_cron').value.trim() }); toast('定时配置已保存', 'good'); }
+  try { await api.post('/api/tasks/schedule', { enabled: $('#s-schedule_enabled').checked, cron: $('#s-schedule_cron').value.trim() }); toast('定时配置已保存', 'good'); }
   catch (e) { toast('保存失败', 'err'); }
 };
 $('#btn-save-template').onclick = async () => {
@@ -885,10 +885,11 @@ $('#btn-run').onclick = async () => {
 };
 $('#runModalClose').onclick = () => $('#runModal').hidden = true;
 
-let pollTimer;
-function pollRun() {
-  clearTimeout(pollTimer);
-  clearInterval(pollTimer);
+async function pollRun() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
   pollTimer = setInterval(async () => {
     try {
       const s = await api.get('/api/tasks/run');

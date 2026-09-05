@@ -42,7 +42,7 @@ def get_schedule():
     return scheduler.next_run_info()
 
 
-@router.put("/schedule")
+@router.post("/schedule")
 def update_schedule(body: dict):
     """更新定时任务设置"""
     if "cron" in body:
