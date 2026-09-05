@@ -111,20 +111,25 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
             except Exception:
                 pass
 
-            try:
-                login_btn = page.locator('text=登录, text=扫码登录').first()
-                if await login_btn.is_visible(timeout=3000):
-                    return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
-            except Exception:
-                pass
+            for marker in ("登录", "扫码登录", "立即登录", "二维码登录"):
+                try:
+                    btn = page.get_by_text(marker, exact=False).first
+                    if await btn.is_visible(timeout=2000):
+                        return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
+                except Exception:
+                    continue
 
             return {"valid": False, "message": "无法确认 Cookie 状态"}
 
         except Exception as e:
-            return {"valid": False, "message": f"验证失败: {e}"}
+            log.error("验证账号异常: %s", e, exc_info=True)
+            return {"valid": False, "message": f"验证失败: {type(e).__name__}: {e}"}
         finally:
             if browser:
-                await browser.close()
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
 
 async def fetch_friend_list(account: dict) -> list[str]:
@@ -480,63 +485,245 @@ def fetch_friend_list_sync(account: dict) -> list[str]:
 
 
 # ==================== 代理测试与归属地检测 ====================
+#
+# 不依赖 curl / requests / PySocks，使用纯标准库实现 SOCKS5 拨号。
+# 实现 SOCKS5 RFC 1928（CONNECT 命令、IPv4 地址、无认证 / 用户名密码认证）。
+# DNS 解析在使用 SOCKS5 时放在远端（type 0x03 表示域名），规避本地无外网/受限 DNS 的问题。
 
-import subprocess
+import socket
+import struct
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
+
+_PROXY_TIMEOUT = float(os.environ.get("DAS_PROXY_TIMEOUT", "15") or "15")
+_GEO_HTTP_TARGET = ("ip-api.com", 80)
+_GEO_HTTP_PATH = (
+    "/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,query"
+)
+_DIRECT_DNS_HOSTS = ("1.1.1.1", "8.8.8.8")
+_DIRECT_DNS_PORT = 53
 
 
-async def _test_proxy_async(proxy_url: str) -> dict:
-    """异步测试代理并获取归属地（通过 ip-api.com，使用 curl 支持 SOCKS5）"""
+def _split_proxy_url(proxy_url: str) -> tuple[str, int, str, str]:
+    """解析 socks5://[user:pass@]host:port 为 (host, port, user, password)。"""
+    if not proxy_url:
+        raise ValueError("代理 URL 为空")
+    if "://" in proxy_url:
+        scheme, rest = proxy_url.split("://", 1)
+        if scheme.lower() not in {"socks5", "socks5h"}:
+            raise ValueError(f"仅支持 SOCKS5 代理：{scheme}")
+    else:
+        rest = proxy_url
+    user = pwd = ""
+    if "@" in rest:
+        auth, host_part = rest.rsplit("@", 1)
+        if ":" in auth:
+            user, pwd = auth.split(":", 1)
+    else:
+        host_part = rest
+    if ":" not in host_part:
+        raise ValueError("代理 URL 缺少端口：socks5://host:port")
+    host, port_s = host_part.rsplit(":", 1)
+    return host.strip(), int(port_s), user, pwd
+
+
+def _socks5_connect(proxy_url: str, target_host: str, target_port: int) -> socket.socket:
+    """通过 SOCKS5 拨号，target_host 可以是域名或 IP。返回已握手的 socket。"""
+    host, port, user, pwd = _split_proxy_url(proxy_url)
+    sock = socket.create_connection((host, port), timeout=_PROXY_TIMEOUT)
+    try:
+        # GREETING：0x05 0x01 0x00（VER CMD METHOD）
+        sock.sendall(b"\x05\x01\x00")
+        greeting = _recv_exact(sock, 2)
+        if greeting[0] != 0x05:
+            raise ConnectionError("SOCKS5 服务器协议错误")
+        if greeting[1] == 0xFF:
+            raise ConnectionError("SOCKS5 服务器无可用认证方式")
+        if greeting[1] != 0x00:
+            # 0x02 表示需要用户名密码认证
+            if not user:
+                raise ConnectionError("SOCKS5 服务器需要认证但 URL 未提供凭据")
+            req = b"\x01" + bytes([len(user)]) + user.encode("utf-8") + bytes([len(pwd)]) + pwd.encode("utf-8")
+            sock.sendall(req)
+            auth_resp = _recv_exact(sock, 2)
+            if auth_resp[1] != 0x00:
+                raise ConnectionError("SOCKS5 用户名密码认证失败")
+        # CONNECT 请求：VER CMD RSV ATYP DST.ADDR DST.PORT
+        if _looks_like_ip(target_host):
+            try:
+                packed = socket.inet_aton(target_host)
+                atyp = b"\x01" + packed
+            except OSError:
+                atyp = b"\x03" + bytes([len(target_host)]) + target_host.encode("utf-8")
+        else:
+            atyp = b"\x03" + bytes([len(target_host)]) + target_host.encode("utf-8")
+        req = b"\x05\x01\x00" + atyp + struct.pack("!H", target_port)
+        sock.sendall(req)
+        # 应答：VER REP RSV ATYP BND.ADDR BND.PORT
+        resp = _recv_exact(sock, 4)
+        atyp = resp[3]
+        if resp[1] != 0x00:
+            err_map = {
+                0x01: "一般性失败",
+                0x02: "规则不允许",
+                0x03: "网络不可达",
+                0x04: "主机不可达",
+                0x05: "连接被拒",
+                0x06: "TTL 过期",
+                0x07: "命令不支持",
+                0x08: "地址类型不支持",
+            }
+            raise ConnectionError(f"SOCKS5 CONNECT 失败：{err_map.get(resp[1], '0x%02x' % resp[1])}")
+        if atyp == 0x01:
+            _recv_exact(sock, 4)
+        elif atyp == 0x03:
+            ln = _recv_exact(sock, 1)[0]
+            _recv_exact(sock, ln)
+        elif atyp == 0x04:
+            _recv_exact(sock, 16)
+        else:
+            raise ConnectionError(f"SOCKS5 不支持的 ATYP：0x{atyp:02x}")
+        _recv_exact(sock, 2)
+        return sock
+    except BaseException:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        raise
+
+
+def _recv_exact(sock: socket.socket, n: int) -> bytes:
+    """精确接收 n 字节。"""
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            raise ConnectionError("连接被关闭")
+        buf += chunk
+    return buf
+
+
+def _looks_like_ip(host: str) -> bool:
+    if host.count(".") != 3:
+        return False
+    for seg in host.split("."):
+        if not seg.isdigit() or not 0 <= int(seg) <= 255:
+            return False
+    return True
+
+
+def _http_get_via_socks(proxy_url: str, host: str, port: int, path: str) -> str:
+    """通过 SOCKS5 发起 HTTP GET，返回响应体文本。"""
+    sock = _socks5_connect(proxy_url, host, port)
+    try:
+        req = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            f"User-Agent: Mozilla/5.0 (Douyin-Auto-Spark)\r\n"
+            f"Accept: application/json\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode("ascii")
+        sock.sendall(req)
+        chunks = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        if b"\r\n\r\n" not in raw:
+            return raw.decode("utf-8", "replace")
+        head, body = raw.split(b"\r\n\r\n", 1)
+        return body.decode("utf-8", "replace")
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _direct_http_get(host: str, port: int, path: str) -> str:
+    """直连 HTTP GET（仅在明确代理为空时使用）。"""
+    sock = socket.create_connection((host, port), timeout=_PROXY_TIMEOUT)
+    try:
+        req = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            f"User-Agent: Mozilla/5.0 (Douyin-Auto-Spark)\r\n"
+            f"Accept: application/json\r\n"
+            f"Connection: close\r\n\r\n"
+        ).encode("ascii")
+        sock.sendall(req)
+        chunks = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        raw = b"".join(chunks)
+        if b"\r\n\r\n" not in raw:
+            return raw.decode("utf-8", "replace")
+        _, body = raw.split(b"\r\n\r\n", 1)
+        return body.decode("utf-8", "replace")
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _test_proxy_internal(proxy_url: str) -> dict:
+    """同步执行：测试代理并解析 ip-api.com 响应。"""
     if not proxy_url:
         return {"ok": False, "message": "代理 URL 为空"}
 
-    # curl 原生支持 socks5:// 协议
-    cmd = [
-        "curl", "-s", "--max-time", "15",
-        "-x", proxy_url,
-        "http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,query",
-    ]
+    try:
+        body = _http_get_via_socks(proxy_url, *_GEO_HTTP_TARGET, path=_GEO_HTTP_PATH)
+    except (OSError, ConnectionError) as e:
+        return {"ok": False, "message": f"测试失败：{e}"}
+    except Exception as e:
+        return {"ok": False, "message": f"测试失败：{type(e).__name__}: {e}"}
 
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-        if result.returncode != 0:
-            return {"ok": False, "message": f"测试失败: {result.stderr.strip() or 'curl 错误'}"}
-
-        data = json.loads(result.stdout)
-
-        if data.get("status") != "success":
-            return {"ok": False, "message": "归属地查询失败"}
-
-        ip = data.get("query", "")
-        country = data.get("country", "")
-        country_code = data.get("countryCode", "")
-        region = data.get("regionName", "")
-        city = data.get("city", "")
-
-        parts = [p for p in [country, region, city] if p]
-        location_str = " · ".join(parts) if parts else "未知"
-
-        return {
-            "ok": True,
-            "ip": ip,
-            "country": country,
-            "country_code": country_code,
-            "region": region,
-            "city": city,
-            "message": f"✅ {location_str} ({ip})",
-        }
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "message": "测试超时"}
+        data = json.loads(body)
     except json.JSONDecodeError:
-        return {"ok": False, "message": "响应解析失败"}
-    except Exception as e:
-        return {"ok": False, "message": f"测试失败: {e}"}
+        return {"ok": False, "message": f"响应解析失败：{body[:120]!r}"}
+
+    if not isinstance(data, dict) or data.get("status") != "success":
+        msg = data.get("message") if isinstance(data, dict) else None
+        return {"ok": False, "message": f"归属地查询失败：{msg or '无效响应'}"}
+
+    country = data.get("country", "")
+    country_code = data.get("countryCode", "")
+    region = data.get("regionName", "")
+    city = data.get("city", "")
+    ip = data.get("query", "")
+    parts = [p for p in [country, region, city] if p]
+    location_str = " · ".join(parts) if parts else "未知"
+    return {
+        "ok": True,
+        "ip": ip,
+        "country": country,
+        "country_code": country_code,
+        "region": region,
+        "city": city,
+        "message": f"✅ {location_str} ({ip})",
+    }
+
+
+async def _test_proxy_async(proxy_url: str) -> dict:
+    """异步包装：在线程池中跑 SOCKS5 拨号与 HTTP 读取。"""
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return await loop.run_in_executor(pool, _test_proxy_internal, proxy_url)
 
 
 def test_proxy_sync(proxy_url: str) -> dict:
-    """同步包装器：测试代理"""
-    return asyncio.run(_test_proxy_async(proxy_url))
+    """同步包装：测试代理。"""
+    return _test_proxy_internal(proxy_url)
 
 
 def detect_geo_sync(proxy_url: str) -> dict:
-    """同步包装器：检测归属地"""
-    return asyncio.run(_test_proxy_async(proxy_url))
+    """同步包装：检测归属地。"""
+    return _test_proxy_internal(proxy_url)
