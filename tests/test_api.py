@@ -155,21 +155,10 @@ class TestLogsAPI:
 
 
 class TestYiyanAPI:
-    def test_list_yiyan(self, authenticated_client):
-        resp = authenticated_client.get("/api/yiyan")
-        assert resp.status_code == 200
-
-    def test_add_yiyan(self, authenticated_client):
-        resp = authenticated_client.post("/api/yiyan", json={
-            "hitokoto": "测试一言",
-            "source": "测试来源",
-        })
-        assert resp.status_code == 200
-
     def test_random_yiyan(self, authenticated_client):
-        authenticated_client.post("/api/yiyan", json={
-            "hitokoto": "随机测试",
-            "source": "测试",
-        })
         resp = authenticated_client.get("/api/yiyan/random")
         assert resp.status_code == 200
+        data = resp.json()
+        assert "yiyan" in data
+        if data.get("yiyan"):
+            assert "hitokoto" in data["yiyan"]

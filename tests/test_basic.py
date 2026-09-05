@@ -119,30 +119,32 @@ class TestAuth:
 
 
 class TestYiyan:
-    def test_pick_random_empty(self):
-        """空一言库返回 None"""
+    def test_fetch_yiyan_from_api(self):
+        """测试从 hitokoto.cn 获取一言"""
         from app import yiyan
-        result = yiyan.pick_random_yiyan()
-        assert result is None
+        result = yiyan.fetch_yiyan_from_api()
+        if result is not None:
+            assert "hitokoto" in result
+            assert isinstance(result["hitokoto"], str)
 
     def test_render_message_default(self):
         """测试默认消息渲染"""
         from app import yiyan
-        # 添加一条一言
-        database.add_yiyan("测试一言", "测试来源")
-        msg = yiyan.render_message(None, "账号A", "好友B", include_source=True)
+        item = {"hitokoto": "测试一言", "source": "测试来源", "from_who": "测试作者"}
+        msg = yiyan.render_message(None, "账号A", "好友B", yiyan_item=item, include_source=True)
         assert "测试一言" in msg
-        assert "测试来源" in msg
+        assert "测试作者" in msg
 
     def test_render_message_template(self):
         """测试模板消息渲染"""
         from app import yiyan
-        database.add_yiyan("模板一言", "模板来源")
+        item = {"hitokoto": "模板一言", "source": "模板来源", "from_who": "模板作者"}
         template = "{{friend}}，{{account}} 续火啦\n{{yiyan}}\n{{from}}"
-        msg = yiyan.render_message(template, "我的账号", "好友A")
+        msg = yiyan.render_message(template, "我的账号", "好友A", yiyan_item=item)
         assert "好友A" in msg
         assert "我的账号" in msg
         assert "模板一言" in msg
+        assert "模板作者" in msg
 
 
 class TestDouyinCookie:

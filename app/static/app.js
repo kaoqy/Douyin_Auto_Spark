@@ -53,7 +53,7 @@ themeSel.onchange = () => {
 };
 
 /* ===== 导航 ===== */
-const VIEW_TITLES = { dashboard: '仪表盘', accounts: '账号管理', proxies: '代理', friends: '好友管理', yiyan: '一言库', logs: '续火日志', settings: '设置' };
+const VIEW_TITLES = { dashboard: '仪表盘', accounts: '账号管理', proxies: '代理', friends: '好友管理', logs: '续火日志', settings: '设置' };
 $$('.nav-item').forEach(btn => {
   btn.onclick = () => {
     $$('.nav-item').forEach(b => b.classList.remove('active'));
@@ -65,7 +65,6 @@ $$('.nav-item').forEach(btn => {
     if (btn.dataset.view === 'accounts') loadAccounts();
     if (btn.dataset.view === 'proxies') loadProxies();
     if (btn.dataset.view === 'friends') loadFriends();
-    if (btn.dataset.view === 'yiyan') loadYiyan();
     if (btn.dataset.view === 'logs') loadLogs();
     if (btn.dataset.view === 'settings') loadSettings();
   };
@@ -188,13 +187,14 @@ function loadTrend(tasks) {
   } catch (e) { box.innerHTML = '<div class="hint">趋势加载失败</div>'; }
 }
 
+/* ===== 每日一言（hitokoto.cn API） ===== */
 async function loadQuote() {
   const box = $('#quoteBox');
   if (!box) return;
   try {
     const q = await api.get('/api/yiyan/random');
     box.textContent = q.yiyan ? q.yiyan.hitokoto : '暂无一言';
-    $('#quoteFrom').textContent = q.yiyan && q.yiyan.source ? '——「' + q.yiyan.source + '」' : '';
+    $('#quoteFrom').textContent = q.yiyan && (q.yiyan.source || q.yiyan.from_who) ? '——「' + (q.yiyan.from_who || q.yiyan.source) + '」' : '';
   } catch (e) { box.textContent = '每日一言加载失败'; }
 }
 
@@ -292,8 +292,8 @@ function openAccModal(id = null) {
   $('#accModalTitle').textContent = id ? '编辑账号' : '添加账号';
   $('#m-name').value = '';
   $('#m-cookie').value = '';
+  $('#m-cookie-json').value = '';
   $('#m-enabled').checked = true;
-  // 重置 Cookie 编辑器
   resetCookieEditor();
   populateProxySelect($('#m-proxy'), '');
   if (id) {
@@ -301,11 +301,18 @@ function openAccModal(id = null) {
       $('#m-name').value = a.name;
       populateProxySelect($('#m-proxy'), a.proxy || '');
       $('#m-enabled').checked = !!a.enabled;
-      // 尝试解析已有 Cookie 到编辑器
       try {
         const cookies = JSON.parse(a.cookie);
         if (Array.isArray(cookies)) {
           populateCookieEditor(cookies);
+          generateCookieJson();
+        } else if (typeof a.cookie === 'string' && a.cookie.includes('=')) {
+          $('#m-cookie').value = a.cookie;
+          const parsed = parseCookieText(a.cookie);
+          if (parsed.length) {
+            populateCookieEditor(parsed);
+            generateCookieJson();
+          }
         }
       } catch(e) {}
     });
@@ -316,7 +323,7 @@ $('#btn-add-acc').onclick = () => openAccModal();
 $('#accModalClose').onclick = $('#accModalCancel').onclick = () => $('#accModal').hidden = true;
 
 $('#accModalVerify').onclick = async () => {
-  const cookie = $('#m-cookie').value.trim();
+  const cookie = $('#m-cookie-json').value.trim() || $('#m-cookie').value.trim();
   const proxy = $('#m-proxy').value.trim();
   if (!cookie) return toast('请先输入 Cookie', 'err');
   toast('验证中…');
@@ -327,9 +334,12 @@ $('#accModalVerify').onclick = async () => {
 };
 
 $('#accModalSave').onclick = async () => {
+  const json = $('#m-cookie-json').value.trim();
+  const raw = $('#m-cookie').value.trim();
+  const cookie = json || raw;
   const body = {
     name: $('#m-name').value.trim() || '未命名账号',
-    cookie: $('#m-cookie').value.trim(),
+    cookie,
     proxy: $('#m-proxy').value.trim(),
     enabled: $('#m-enabled').checked,
   };
@@ -352,15 +362,47 @@ async function delAcc(id) {
 /* ===== Cookie 编辑器 UI ===== */
 function resetCookieEditor() {
   $('#cookieEditorRows').innerHTML = '';
-  addCookieRow();
-  updateCookieJson();
+  $('#m-cookie').value = '';
+  $('#m-cookie-json').value = '';
+  $('#cookieCount').textContent = '0 个字段';
+  $('#cookieGenStatus').textContent = '';
+}
+
+function parseCookieText(text) {
+  text = text.trim();
+  if (!text) return [];
+  if (text.startsWith('[')) {
+    try {
+      const arr = JSON.parse(text);
+      if (Array.isArray(arr)) {
+        return arr.map(c => ({
+          name: c.name || c.Name || '',
+          value: c.value || c.Value || '',
+          domain: c.domain || c.Domain || '.douyin.com'
+        }));
+      }
+    } catch(e) {}
+  }
+  const cookies = [];
+  const parts = text.split(/[;\n]/);
+  for (const part of parts) {
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    const name = part.slice(0, eq).trim();
+    const value = part.slice(eq + 1).trim();
+    if (name && value) {
+      cookies.push({ name, value, domain: '.douyin.com' });
+    }
+  }
+  return cookies;
 }
 
 function populateCookieEditor(cookies) {
-  $('#cookieEditorRows').innerHTML = '';
+  const box = $('#cookieEditorRows');
+  box.innerHTML = '';
   if (!cookies.length) { addCookieRow(); return; }
   cookies.forEach(c => addCookieRow(c.name || '', c.value || '', c.domain || '.douyin.com'));
-  updateCookieJson();
+  updateCookieCount();
 }
 
 function addCookieRow(name = '', value = '', domain = '.douyin.com') {
@@ -372,12 +414,16 @@ function addCookieRow(name = '', value = '', domain = '.douyin.com') {
     <input type="text" class="cookie-domain" placeholder="domain" value="${esc(domain)}" />
     <button type="button" class="btn btn-ghost btn-sm cookie-row-del" title="删除">×</button>
   `;
-  div.querySelector('.cookie-row-del').onclick = () => { div.remove(); updateCookieJson(); };
-  div.querySelectorAll('input').forEach(inp => inp.oninput = updateCookieJson);
+  div.querySelector('.cookie-row-del').onclick = () => { div.remove(); updateCookieCount(); };
   $('#cookieEditorRows').appendChild(div);
 }
 
-function updateCookieJson() {
+function updateCookieCount() {
+  const n = $$('#cookieEditorRows .cookie-row').length;
+  $('#cookieCount').textContent = `${n} 个字段`;
+}
+
+function generateCookieJson() {
   const rows = $$('#cookieEditorRows .cookie-row');
   const cookies = [];
   rows.forEach(row => {
@@ -388,12 +434,24 @@ function updateCookieJson() {
       cookies.push({ name, value, domain, path: '/', secure: true, httpOnly: false, sameSite: 'no_restriction' });
     }
   });
-  $('#m-cookie').value = cookies.length ? JSON.stringify(cookies) : '';
-  const count = $('#cookieCount');
-  if (count) count.textContent = `${cookies.length} 个字段`;
+  $('#m-cookie-json').value = cookies.length ? JSON.stringify(cookies) : '';
+  const st = $('#cookieGenStatus');
+  if (st) st.textContent = cookies.length ? `✅ 已生成 ${cookies.length} 个字段` : '⚠️ 无有效字段';
+  return cookies.length;
 }
 
+$('#m-cookie').oninput = () => {
+  const text = $('#m-cookie').value.trim();
+  if (!text) return;
+  const cookies = parseCookieText(text);
+  if (cookies.length > 0) {
+    populateCookieEditor(cookies);
+    $('#cookieGenStatus').textContent = `已识别 ${cookies.length} 个字段，点击「生成 JSON」`;
+  }
+};
+
 $('#btn-add-cookie-row').onclick = () => addCookieRow();
+$('#btn-gen-cookie').onclick = () => generateCookieJson();
 
 /* ===== 代理管理 ===== */
 editingProxyId = null;
@@ -562,7 +620,6 @@ async function loadFriends() {
   try {
     const accounts = (await api.get('/api/accounts')).accounts || [];
     const select = $('#friends-account-select');
-    // 始终重新填充，确保列表最新
     select.innerHTML = '<option value="">选择账号</option>' +
       accounts.filter(a => a.enabled).map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
     select.onchange = () => { currentFriendAccountId = select.value ? parseInt(select.value) : null; renderFriends(); };
@@ -653,62 +710,6 @@ $('#fetchFriendsModalSave').onclick = async () => {
     toast(`已添加 ${names.length} 位好友`, 'good');
     renderFriends();
   } catch (e) { toast('添加失败', 'err'); }
-};
-
-/* ===== 一言库 ===== */
-let editingYiyanId = null;
-async function loadYiyan() {
-  try {
-    const data = await api.get('/api/yiyan');
-    const items = data.yiyan || [];
-    const tb = $('#yiyanTable tbody');
-    tb.innerHTML = items.length ? items.map(y => `
-      <tr>
-        <td>${esc(y.hitokoto)}</td>
-        <td>${esc(y.source || '未知')}</td>
-        <td>${y.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge gray">停用</span>'}</td>
-        <td>
-          <button class="btn btn-ghost btn-sm" onclick="toggleYiyan(${y.id}, ${!y.enabled})">${y.enabled ? '停用' : '启用'}</button>
-          <button class="btn btn-danger btn-sm" onclick="deleteYiyan(${y.id})">删除</button>
-        </td>
-      </tr>`).join('') : '<tr><td colspan="4" style="color:var(--muted)">一言库为空</td></tr>';
-  } catch (e) { toast('加载一言库失败', 'err'); }
-}
-
-$('#btn-add-yiyan').onclick = () => { $('#m-yiyan-text').value = ''; $('#m-yiyan-source').value = ''; editingYiyanId = null; $('#yiyanModal').hidden = false; };
-$('#yiyanModalClose').onclick = $('#yiyanModalCancel').onclick = () => $('#yiyanModal').hidden = true;
-$('#yiyanModalSave').onclick = async () => {
-  const hitokoto = $('#m-yiyan-text').value.trim();
-  const source = $('#m-yiyan-source').value.trim();
-  if (!hitokoto) return toast('内容不能为空', 'err');
-  try { await api.post('/api/yiyan', { hitokoto, source }); $('#yiyanModal').hidden = true; toast('添加成功', 'good'); loadYiyan(); }
-  catch (e) { toast('添加失败', 'err'); }
-};
-
-$('#btn-import-yiyan').onclick = async () => {
-  try { const r = await api.post('/api/yiyan/import', {}); toast(`已导入 ${r.imported} 条一言`, 'good'); loadYiyan(); }
-  catch (e) { toast('导入失败', 'err'); }
-};
-
-$('#btn-random-yiyan').onclick = async () => {
-  try {
-    const r = await api.get('/api/yiyan/random');
-    if (r.yiyan) {
-      $('#random-yiyan-result').style.display = 'block';
-      $('#random-yiyan-result').innerHTML = `<p style="font-size:1.1rem;margin:0">${esc(r.yiyan.hitokoto)}</p><p style="color:var(--muted);margin:4px 0 0">——「${esc(r.yiyan.source || '未知')}」</p>`;
-    }
-  } catch (e) { toast('加载失败', 'err'); }
-};
-
-window.toggleYiyan = async (id, enabled) => {
-  try { await api.put('/api/yiyan/' + id, { enabled }); toast(enabled ? '已启用' : '已停用', 'good'); loadYiyan(); }
-  catch (e) { toast('操作失败', 'err'); }
-};
-
-window.deleteYiyan = async (id) => {
-  if (!confirm('确定删除？')) return;
-  try { await api.del('/api/yiyan/' + id); toast('已删除', 'good'); loadYiyan(); }
-  catch (e) { toast('删除失败', 'err'); }
 };
 
 /* ===== 日志 ===== */

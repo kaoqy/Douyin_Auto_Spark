@@ -31,9 +31,7 @@
         <button class="nav-item" data-view="friends">
           <span class="nav-ico">💬</span>好友管理
         </button>
-        <button class="nav-item" data-view="yiyan">
-          <span class="nav-ico">📝</span>一言库
-        </button>
+
         <button class="nav-item" data-view="logs">
           <span class="nav-ico">📜</span>续火日志
         </button>
@@ -148,21 +146,7 @@
         </div>
       </section>
 
-      <!-- 一言库 -->
-      <section class="view" id="view-yiyan" hidden>
-        <div class="card">
-          <div class="card-head">
-            <h2>一言库</h2>
-            <div class="account-actions">
-              <button class="btn btn-primary btn-sm" id="btn-add-yiyan">＋ 添加一言</button>
-              <button class="btn btn-ghost btn-sm" id="btn-import-yiyan">导入默认</button>
-              <button class="btn btn-ghost btn-sm" id="btn-random-yiyan">🎲 随机一条</button>
-            </div>
-          </div>
-          <div id="random-yiyan-result" class="card" style="display:none;"></div>
-          <div class="table-wrap"><table id="yiyanTable"><thead><tr><th>内容</th><th>出处</th><th>状态</th><th>操作</th></tr></thead><tbody></tbody></table></div>
-        </div>
-      </section>
+      <!-- 一言（已改为第三方 API，此页不再需要） -->
 
       <!-- 日志 -->
       <section class="view" id="view-logs" hidden>
@@ -289,18 +273,23 @@
       <div class="modal-body">
         <div class="form">
           <label>账号名称<input id="m-name" placeholder="例如：小号1" /></label>
+          <label>Cookie（粘贴文字自动识别所有字段）
+            <textarea id="m-cookie" rows="6" placeholder='从浏览器开发者工具或 Cookie Editor 导出粘贴，例如：
+sessionid=abc123; ......' style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea>
+          </label>
           <div class="cookie-editor">
             <div class="cookie-editor-head">
-              <span>Cookie 编辑器</span>
+              <span>识别到的字段</span>
               <button type="button" class="btn btn-ghost btn-sm" id="btn-add-cookie-row">＋ 添加字段</button>
             </div>
             <div id="cookieEditorRows" class="cookie-editor-rows"></div>
             <div class="cookie-editor-foot">
               <span class="hint" id="cookieCount">0 个字段</span>
-              <span class="hint">自动检测字段并生成 JSON</span>
+              <span class="hint">修改字段后点击「生成 JSON」</span>
             </div>
           </div>
-          <label style="margin-top:12px">原始 JSON（只读，自动生成）<textarea id="m-cookie" rows="4" readonly placeholder='[{"name":"sessionid","value":"...","domain":".douyin.com"}]'></textarea></label>
+          <div class="form-actions"><button class="btn btn-ghost" id="btn-gen-cookie" type="button">生成 JSON</button><span class="hint" id="cookieGenStatus"></span></div>
+          <label style="margin-top:12px">原始 JSON（只读）<textarea id="m-cookie-json" rows="4" readonly placeholder='自动生成...' style="font-family:ui-monospace,Consolas,monospace;font-size:12px"></textarea></label>
           <label>使用代理（指定 socks 节点，不同节点可并行续火）
             <select id="m-proxy"><option value="">自动 / 直连</option></select>
           </label>

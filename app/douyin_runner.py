@@ -471,32 +471,27 @@ def fetch_friend_list_sync(account: dict) -> list[str]:
 
 # ==================== 代理测试与归属地检测 ====================
 
+import subprocess
+
+
 async def _test_proxy_async(proxy_url: str) -> dict:
-    """异步测试代理并获取归属地（通过 ip-api.com）"""
+    """异步测试代理并获取归属地（通过 ip-api.com，使用 curl 支持 SOCKS5）"""
     if not proxy_url:
         return {"ok": False, "message": "代理 URL 为空"}
 
-    proxy = _parse_proxy_url(proxy_url)
-    if not proxy:
-        return {"ok": False, "message": "代理 URL 解析失败"}
+    # curl 原生支持 socks5:// 协议
+    cmd = [
+        "curl", "-s", "--max-time", "15",
+        "-x", proxy_url,
+        "http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,query",
+    ]
 
     try:
-        import urllib.request
-        # 构造代理 handler
-        proxy_handler = urllib.request.ProxyHandler({
-            "http": proxy_url,
-            "https": proxy_url,
-        })
-        opener = urllib.request.build_opener(proxy_handler)
-        opener.addheaders = [("User-Agent", "Mozilla/5.0")]
-        urllib.request.install_opener(opener)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+        if result.returncode != 0:
+            return {"ok": False, "message": f"测试失败: {result.stderr.strip() or 'curl 错误'}"}
 
-        # ip-api.com 返回 JSON，包含 country/region/city 等
-        req = urllib.request.Request(
-            "http://ip-api.com/json/?lang=zh-CN&fields=status,country,countryCode,regionName,city,query"
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
+        data = json.loads(result.stdout)
 
         if data.get("status") != "success":
             return {"ok": False, "message": "归属地查询失败"}
@@ -519,6 +514,10 @@ async def _test_proxy_async(proxy_url: str) -> dict:
             "city": city,
             "message": f"✅ {location_str} ({ip})",
         }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "message": "测试超时"}
+    except json.JSONDecodeError:
+        return {"ok": False, "message": "响应解析失败"}
     except Exception as e:
         return {"ok": False, "message": f"测试失败: {e}"}
 

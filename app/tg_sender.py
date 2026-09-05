@@ -100,7 +100,7 @@ def push_summary(summary: dict) -> bool:
     return _send_tg_message(bot_token, chat_id, text, silent)
 
 
-def push_quote(yiyan_text: str, source: str = "") -> bool:
+def push_quote(yiyan_text: str, source: str = "", from_who: str = "") -> bool:
     """推送每日一言到 TG"""
     enabled = database.get_setting("tg_enabled", "0") == "1"
     quote_enabled = database.get_setting("tg_quote_enabled", "1") == "1"
@@ -115,7 +115,9 @@ def push_quote(yiyan_text: str, source: str = "") -> bool:
         return False
 
     text = f"📝 <b>每日一言</b>\n\n{yiyan_text}"
-    if source:
+    if from_who:
+        text += f"\n\n—— {from_who}"
+    elif source:
         text += f"\n\n——「{source}」"
 
     return _send_tg_message(bot_token, chat_id, text, silent)
