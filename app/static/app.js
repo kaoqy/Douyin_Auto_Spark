@@ -1181,9 +1181,18 @@ $('#btn-run').onclick = async () => {
     $('#runBar').style.width = '0%';
     $('#runInfo').textContent = '正在启动…';
     $('#runLines').innerHTML = '';
-    await api.post('/api/tasks/run', {});
+    const r = await api.post('/api/tasks/run', {});
+    if (r && r.status === 'skipped') {
+      $('#runInfo').textContent = '⚠️ 已有续火任务在运行，请等待当前任务完成';
+      addRunLine('本次点击被跳过：上一个任务仍在运行中');
+      loadDashboard();
+      return;
+    }
     pollRun();
-  } catch (e) { toast('启动失败', 'err'); $('#runModal').hidden = true; }
+  } catch (e) {
+    toast('启动失败：' + (e.message || e), 'err');
+    $('#runModal').hidden = true;
+  }
 };
 $('#runModalClose').onclick = () => $('#runModal').hidden = true;
 
@@ -1192,10 +1201,26 @@ async function pollRun() {
     clearInterval(pollTimer);
     pollTimer = null;
   }
+  // 如果 3 秒内还没有任何 poll 返回 running 状态，在 “正在启动…” 后追加等待计时
+  let firstRunningSeen = false;
+  const waitingFromAt = Date.now();
+  const waitingTip = setInterval(() => {
+    if (firstRunningSeen) {
+      clearInterval(waitingTip);
+      return;
+    }
+    const sec = Math.floor((Date.now() - waitingFromAt) / 1000);
+    if (sec >= 3) {
+      $('#runInfo').textContent = `正在启动…已等 ${sec}s（首次访问页加载中）`;
+    }
+  }, 1000);
+
   pollTimer = setInterval(async () => {
     try {
       const s = await api.get('/api/tasks/run');
       if (s.run && s.run.status === 'running') {
+        firstRunningSeen = true;
+        clearInterval(waitingTip);
         const r = s.run;
         const subMsg = r.message || `账号 ${r.current_account || ''}`;
         $('#runInfo').textContent = `账号 ${r.accounts_done || 0}/${r.accounts_total || 0}（${r.progress || 0}%）· ${subMsg}`;
@@ -1204,14 +1229,24 @@ async function pollRun() {
         addRunLine(`运行中… 已完成 ${r.accounts_done || 0}/${r.accounts_total || 0} 个账号${acct}`);
       } else {
         clearInterval(pollTimer);
+        pollTimer = null;
+        clearInterval(waitingTip);
         $('#runBar').style.width = '100%';
         const last = await api.get('/api/tasks');
         const lastTask = (last.tasks || [])[0];
-        if (lastTask) { $('#runInfo').textContent = `✅ 完成（${lastTask.status}）`; addRunLine(`完成：${lastTask.message || ''}`); }
+        if (lastTask) {
+          $('#runInfo').textContent = `✅ 完成（${lastTask.status}）`;
+          addRunLine(`完成：${lastTask.message || ''}`);
+        } else {
+          $('#runInfo').textContent = '✅ 完成（无历史任务）';
+          addRunLine('完成：未找到本次任务记录');
+        }
         loadDashboard(); loadAccounts(); loadLogs();
       }
     } catch (e) {
       clearInterval(pollTimer);
+      pollTimer = null;
+      clearInterval(waitingTip);
       $('#runInfo').textContent = '运行状态获取失败';
       addRunLine(e.message || '网络请求失败');
     }

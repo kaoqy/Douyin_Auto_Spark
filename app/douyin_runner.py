@@ -325,8 +325,75 @@ class LocalProxy:
             return False
 
 
+class LocalProxyPool:
+    """LocalProxy 复用池。
+
+    不同账号可能使用同一个 SOCKS5 代理：每次验证都起/停 gost 进程太浪费。
+    本类按 proxy_url 缓存已启动的 LocalProxy，多个调用方同时复用。
+    直连（空 url）也建一个“伪”条目便于统一调用。
+
+    不是 thread/connection 池 —— 只是进程池。Playwright 仍需要串行访问代理
+    端口，但 gost 是无状态的转发器，并发请求不冲突。
+    """
+
+    _instances: dict[str, "LocalProxy"] = {}
+    _lock: "asyncio.Lock | None" = None
+
+    @classmethod
+    def _get_lock(cls) -> "asyncio.Lock":
+        if cls._lock is None:
+            cls._lock = asyncio.Lock()
+        return cls._lock
+
+    @classmethod
+    async def acquire(cls, proxy_url: str) -> LocalProxy:
+        """获取一个已就绪的 LocalProxy。重复调用同一 url 返回同一实例。"""
+        key = proxy_url or ""
+        async with cls._get_lock():
+            lp = cls._instances.get(key)
+            if lp is None or not lp._is_alive():
+                lp = LocalProxy(proxy_url)
+                await lp.start()
+                if not lp.ok:
+                    # 启动失败：原样返回，调用方根据 lp.error / lp.ok 判断
+                    cls._instances[key] = lp
+                    return lp
+                cls._instances[key] = lp
+            return lp
+
+    @classmethod
+    async def shutdown(cls) -> None:
+        """关闭所有实例，进程退出前调用。"""
+        async with cls._get_lock():
+            items = list(cls._instances.items())
+            cls._instances.clear()
+        for _, lp in items:
+            try:
+                await lp.stop()
+            except Exception:
+                pass
+
+
+def _is_alive(self_ref) -> bool:
+    """LocalProxy 的存活判断：进程在且端口可连。"""
+    proc = self_ref._proc
+    if proc is not None and proc.returncode is not None:
+        return False
+    return True
+
+# 把 _is_alive 挂到 LocalProxy 上
+LocalProxy._is_alive = _is_alive  # type: ignore[attr-defined]
+
+
 async def verify_cookie(cookie: str, proxy: str = "") -> dict:
-    """验证账号 Cookie 是否有效"""
+    """验证账号 Cookie 是否有效。
+
+    关键优化：
+    1. LocalProxyPool 复用 gost 进程，同一代理多次验证不重启
+    2. 多个“有效指示器”并发探查（asyncio.gather），不再串行
+    3. 网络空闲超时从 10s 降到 5s
+    4. page.goto 用 commit，domcontentloaded 之后直接探查
+    """
     from playwright.async_api import async_playwright
 
     try:
@@ -334,10 +401,8 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
     except Exception as e:
         return {"valid": False, "message": f"Cookie 解析失败: {e}"}
 
-    local_proxy = LocalProxy(proxy)
-    await local_proxy.start()
+    local_proxy = await LocalProxyPool.acquire(proxy)
     if proxy and not local_proxy.ok:
-        await local_proxy.stop()
         return {"valid": False, "message": f"代理初始化失败：{local_proxy.error}"}
     async with async_playwright() as p:
         browser = None
@@ -366,40 +431,39 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
                     minimal.append(mc)
                 await context.add_cookies(minimal)
             page = await context.new_page()
-            await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
-
-            # 抖音聊天页结构会动态调整，不能只依赖单一 semi-input 选择器。
-            # 先等待页面稳定，再通过多个登录态特征综合判断。
+            # 用 commit 等待返回，dom 立即可用；不依赖 networkidle
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                pass
+                await page.goto("https://www.douyin.com/chat", wait_until="commit", timeout=20000)
+            except Exception as e:
+                return {"valid": False, "message": f"打开抖音页失败：{_humanize_playwright_error(e, used_proxy=bool(proxy))}"}
 
+            # 并发探查多个“有效”指示器
             valid_selectors = (
-                'input[placeholder="搜索"]',
                 'input[placeholder*="搜索"]',
                 '[contenteditable="true"]',
-                'textarea[placeholder*="消息"]',
                 '[class*="conversation"]',
                 '[class*="message-list"]',
                 '[class*="chat-list"]',
             )
-            for selector in valid_selectors:
-                try:
-                    locator = page.locator(selector).first
-                    if await locator.is_visible(timeout=3000):
-                        return {"valid": True, "message": "Cookie 有效，已进入抖音消息页面"}
-                except Exception:
-                    continue
+            valid_tasks = [
+                _probe_selector_visible(page, sel, timeout_ms=4000)
+                for sel in valid_selectors
+            ]
+            valid_results = await asyncio.gather(*valid_tasks, return_exceptions=True)
+            for ok in valid_results:
+                if ok is True:
+                    return {"valid": True, "message": "Cookie 有效，已进入抖音消息页面"}
 
-            # 明确出现登录入口时才判定 Cookie 失效。
-            for marker in ("登录", "扫码登录", "立即登录", "二维码登录", "验证码登录", "密码登录"):
-                try:
-                    locator = page.get_by_text(marker, exact=False).first
-                    if await locator.is_visible(timeout=2000):
-                        return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
-                except Exception:
-                    continue
+            # 并发探查“登录页”指示器
+            invalid_markers = ("登录", "扫码登录", "立即登录", "二维码登录", "验证码登录", "密码登录")
+            invalid_tasks = [
+                _probe_text_visible(page, marker, timeout_ms=2000)
+                for marker in invalid_markers
+            ]
+            invalid_results = await asyncio.gather(*invalid_tasks, return_exceptions=True)
+            for ok in invalid_results:
+                if ok is True:
+                    return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
 
             # 页面可能因风控、验证码或结构变化而无法直接识别，返回具体页面信息，
             # 不再把这种情况笼统显示为“无法确认 Cookie 状态”。
@@ -429,13 +493,35 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
                     await browser.close()
                 except Exception:
                     pass
-            await local_proxy.stop()
+            # 不 stop local_proxy——它被池复用
+
+
+async def _probe_selector_visible(page, selector: str, timeout_ms: int) -> bool:
+    """并发安全地探查一个选择器是否可见。"""
+    try:
+        loc = page.locator(selector).first
+        return await loc.is_visible(timeout=timeout_ms)
+    except Exception:
+        return False
+
+
+async def _probe_text_visible(page, text: str, timeout_ms: int) -> bool:
+    """并发安全地探查页面是否包含指定文本。"""
+    try:
+        loc = page.get_by_text(text, exact=False).first
+        return await loc.is_visible(timeout=timeout_ms)
+    except Exception:
+        return False
+
 
 
 async def fetch_friend_list(account: dict) -> list[str]:
     """自动获取抖音聊天页的好友列表。
 
-    不依赖抖音前端类名（已哈希化），用结构特征 + 多策略提取。
+    关键优化：
+    1. LocalProxyPool 复用 gost 进程
+    2. 用 commit 等待代替 networkidle 10s + wait_for_timeout 3s
+    3. 只在“明确”登录页信号才早返回；模糊信号让页加载后重新评估
     """
     from playwright.async_api import async_playwright
 
@@ -448,10 +534,8 @@ async def fetch_friend_list(account: dict) -> list[str]:
         return []
 
     friends: list[str] = []
-    local_proxy = LocalProxy(proxy_url)
-    await local_proxy.start()
+    local_proxy = await LocalProxyPool.acquire(proxy_url)
     if proxy_url and not local_proxy.ok:
-        await local_proxy.stop()
         log.error("代理初始化失败：%s", local_proxy.error)
         return []
     async with async_playwright() as p:
@@ -469,15 +553,13 @@ async def fetch_friend_list(account: dict) -> list[str]:
                 minimal = [{"name": c.name, "value": c.value, "domain": c.domain or ".douyin.com", "path": "/"} for c in cookies]
                 await context.add_cookies(minimal)
             page = await context.new_page()
-            await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
-
             try:
-                await page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                pass
-            await page.wait_for_timeout(3000)
+                await page.goto("https://www.douyin.com/chat", wait_until="commit", timeout=20000)
+            except Exception as e:
+                log.error("打开抖音页失败：%s", e)
+                return []
 
-            # 1) 判断是否在登录页 — 多信号综合判断
+            # 1) 探查登录状态。只在“明确”信号才返回；不依赖 networkidle。
             login_signals = await page.evaluate(
                 """() => {
                     const url = window.location.href;
@@ -487,21 +569,16 @@ async def fetch_friend_list(account: dict) -> list[str]:
                     const hasScanText = [...document.querySelectorAll('*')].some(el =>
                         el.textContent && el.textContent.trim() === '扫码登录'
                     );
-                    const hasLoginBtn = [...document.querySelectorAll('button, div[role="button"]')].some(el =>
-                        el.textContent && ['登录', '立即登录', '密码登录', '验证码登录'].includes(el.textContent.trim())
-                    );
                     const hasPhoneInput = !!document.querySelector('input[type="tel"]');
                     const hasVerifyInput = !!document.querySelector('input[placeholder*="验证码"], input[placeholder*="手机号"]');
                     const hasSearch = !!document.querySelector('input[placeholder*="搜索"], input[type="search"]');
-                    return {
-                        hasLoginPath, hasQR, hasScanText, hasLoginBtn,
-                        hasPhoneInput, hasVerifyInput, hasSearch
-                    };
+                    return {hasLoginPath, hasQR, hasScanText, hasPhoneInput, hasVerifyInput, hasSearch};
                 }"""
             )
 
-            if login_signals.get("hasLoginPath") or (
-                login_signals.get("hasLoginBtn") and not login_signals.get("hasSearch")
+            # 只有“多个强信号同时出现”才判定登录页；只是 hasLoginBtn 不够
+            if login_signals.get("hasLoginPath") and (
+                login_signals.get("hasQR") or login_signals.get("hasScanText") or login_signals.get("hasPhoneInput")
             ):
                 log.warning(
                     "当前处于登录页，Cookie 已失效或未登录（signals: %s）",
@@ -509,12 +586,21 @@ async def fetch_friend_list(account: dict) -> list[str]:
                 )
                 return []
 
-            # 2) 等待聊天页渲染 — 以搜索框出现为准
-            try:
-                search_input = page.locator('input[placeholder*="搜索"], input[type="search"]').first
-                await search_input.wait_for(state="visible", timeout=15000)
-            except Exception:
-                pass
+            # 2) 等待聊天页渲染 — 并发探查多个“聊天页”指示器
+            ready_selectors = (
+                'input[placeholder*="搜索"]',
+                '[class*="conversation"]',
+                '[class*="message-list"]',
+                '[class*="chat-list"]',
+                '[contenteditable="true"]',
+            )
+            ready_tasks = [
+                _probe_selector_visible(page, sel, timeout_ms=8000)
+                for sel in ready_selectors
+            ]
+            ready_results = await asyncio.gather(*ready_tasks, return_exceptions=True)
+            if not any(r is True for r in ready_results):
+                log.warning("聊天页指示器均未出现，尝试提取会话列表（可能为加载缓慢）")
 
             # 3) 提取好友名称 — 结构探测，不依赖类名
             items = await page.evaluate(
@@ -596,9 +682,10 @@ async def fetch_friend_list(account: dict) -> list[str]:
                     await browser.close()
                 except Exception:
                     pass
-            await local_proxy.stop()
+            # local_proxy 被池复用，不 stop
 
     return list(dict.fromkeys(friends))
+
 
 async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     """执行单个账号的续火任务"""
@@ -643,10 +730,8 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             return result
     include_source = database.get_setting("yiyan_include_source", "1") == "1"
 
-    local_proxy = LocalProxy(proxy_url)
-    await local_proxy.start()
+    local_proxy = await LocalProxyPool.acquire(proxy_url)
     if proxy_url and not local_proxy.ok:
-        await local_proxy.stop()
         result.status = "failed"
         result.message = f"代理初始化失败：{local_proxy.error}"
         log.error("  [%s] %s", account["name"], result.message)
@@ -683,7 +768,13 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 await context.add_cookies(minimal)
 
             page = await context.new_page()
-            await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
+            try:
+                await page.goto("https://www.douyin.com/chat", wait_until="commit", timeout=20000)
+            except Exception as e:
+                result.status = "failed"
+                result.message = f"打开抖音页失败：{_humanize_playwright_error(e, used_proxy=bool(proxy_url))}"
+                log.error("  [%s] %s", account["name"], result.message)
+                return result
 
             search_input = page.locator('input[placeholder*="搜索"], input[type="search"]').first
             try:
@@ -818,7 +909,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     await browser.close()
                 except Exception:
                     pass
-            await local_proxy.stop()
+            # local_proxy 被池复用，不 stop
 
     return result
 

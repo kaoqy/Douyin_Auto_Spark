@@ -197,3 +197,53 @@ def test_port_allocation_increments():
     p1 = LocalProxy("socks5://u:p@1.2.3.4:1080")._allocate_port()
     p2 = LocalProxy("socks5://u:p@1.2.3.4:1080")._allocate_port()
     assert p2 == p1 + 1
+
+
+# ===== LocalProxyPool =====
+
+from app.douyin_runner import LocalProxyPool
+
+
+def test_pool_no_auth_returns_direct_config():
+    """HTTP 或无认证 SOCKS5：池返回 ok=True 的 LocalProxy，但不需要 gost。"""
+    async def runner():
+        LocalProxyPool._instances.clear()
+        lp = await LocalProxyPool.acquire("http://1.2.3.4:8080")
+        assert lp.ok is True
+        assert lp.playwright_config == {"server": "http://1.2.3.4:8080"}
+        assert lp._proc is None  # 不需要 gost
+        await LocalProxyPool.shutdown()
+    asyncio.run(runner())
+
+
+def test_pool_reuses_same_instance_for_same_url():
+    """同一 proxy_url 多次 acquire 返回同一实例，不重启 gost。"""
+    async def runner():
+        LocalProxyPool._instances.clear()
+        lp1 = await LocalProxyPool.acquire("http://1.2.3.4:8080")
+        lp2 = await LocalProxyPool.acquire("http://1.2.3.4:8080")
+        assert lp1 is lp2
+        await LocalProxyPool.shutdown()
+    asyncio.run(runner())
+
+
+def test_pool_empty_url_is_separate_key():
+    """空字符串（直连）和具体 url 互不影响。"""
+    async def runner():
+        LocalProxyPool._instances.clear()
+        lp1 = await LocalProxyPool.acquire("")
+        lp2 = await LocalProxyPool.acquire("http://1.2.3.4:8080")
+        assert lp1 is not lp2
+        await LocalProxyPool.shutdown()
+    asyncio.run(runner())
+
+
+def test_pool_shutdown_clears_all():
+    async def runner():
+        LocalProxyPool._instances.clear()
+        await LocalProxyPool.acquire("http://1.2.3.4:8080")
+        await LocalProxyPool.acquire("socks5://1.2.3.4:1080")
+        assert len(LocalProxyPool._instances) == 2
+        await LocalProxyPool.shutdown()
+        assert len(LocalProxyPool._instances) == 0
+    asyncio.run(runner())
