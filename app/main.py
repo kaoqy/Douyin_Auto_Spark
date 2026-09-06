@@ -52,7 +52,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="抖音自动续火花管理面板",
     description="抖音聊天续火 · 多账号 · 定时任务 · SOCKS 代理",
-    version="2.1.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
