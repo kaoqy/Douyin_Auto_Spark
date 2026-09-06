@@ -1304,8 +1304,52 @@ $('#btn-change-pwd').onclick = async () => {
   } catch (e) { st.textContent = e.message || '修改失败'; }
 };
 
+/* ===== 实时续火状态条 ===== */
+let _liveRun = null;
+let _liveRunTimer = null;
+
+async function _pollLiveRun() {
+  try {
+    const s = await api.get('/api/tasks/run');
+    _liveRun = s.run || null;
+  } catch (e) {
+    _liveRun = null;
+  }
+  _renderLiveRunBar();
+}
+
+function _renderLiveRunBar() {
+  const bar = $('#liveRunBar');
+  if (!bar) return;
+  if (_liveRun && _liveRun.status === 'running') {
+    const r = _liveRun;
+    const subMsg = r.message || (r.current_account ? `正在处理 ${r.current_account}` : '');
+    bar.hidden = false;
+    bar.classList.add('live');
+    bar.innerHTML = `
+      <div class="live-run-row">
+        <span class="spinner"></span>
+        <span class="live-run-text">续火进行中 · 账号 ${r.accounts_done || 0}/${r.accounts_total || 0}（${r.progress || 0}%）</span>
+        <span class="live-run-sub">${subMsg}</span>
+        <button class="btn btn-sm" onclick="document.querySelector('button[data-view=&quot;logs&quot;]')?.click(); document.getElementById('runModal')?.removeAttribute('hidden')">查看详情</button>
+      </div>
+    `;
+  } else {
+    bar.hidden = true;
+    bar.classList.remove('live');
+    bar.innerHTML = '';
+  }
+}
+
+function startLiveRunPolling() {
+  if (_liveRunTimer) return;
+  _pollLiveRun();
+  _liveRunTimer = setInterval(_pollLiveRun, 3000);
+}
+
 /* ===== 初始化 ===== */
 loadVersion();
 loadMe();
 loadDashboard();
 setInterval(() => { if (!$('#view-dashboard').hidden) loadDashboard(); }, 30000);
+startLiveRunPolling();

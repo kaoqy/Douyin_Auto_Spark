@@ -241,6 +241,16 @@ input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px;cursor:
 .sched-icon{font-size:15px}
 .sched-text{color:var(--muted);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .sched-countdown{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums;color:var(--accent);white-space:nowrap}
+.live-run-bar{margin:-4px 0 18px;padding:0}
+.live-run-bar[hidden]{display:none}
+.live-run-bar.live{animation:liveBarPulse 1.5s ease-in-out infinite alternate}
+.live-run-row{display:flex;align-items:center;gap:10px;padding:12px 16px;border:1px solid var(--accent);border-radius:12px;background:linear-gradient(135deg,var(--surface) 0%,rgba(255,107,107,.04) 100%);font-size:14px;box-shadow:var(--shadow);flex-wrap:wrap}
+.live-run-row .spinner{width:14px;height:14px;border:2px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin .8s linear infinite;flex-shrink:0}
+.live-run-text{font-weight:600;color:var(--accent)}
+.live-run-sub{color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.live-run-row .btn{margin-left:auto;flex-shrink:0}
+@keyframes liveBarPulse{0%{box-shadow:0 0 0 0 rgba(255,107,107,.18)}100%{box-shadow:0 0 0 8px rgba(255,107,107,0)}}
+@media(max-width:560px){.live-run-row{flex-wrap:wrap}.live-run-row .btn{margin-left:0;width:100%}}
 @media(max-width:560px){.sched-strip{flex-wrap:wrap}.sched-countdown{margin-left:0}}
 @media(max-width:900px){.dash-row{grid-template-columns:1fr}}
 .view:not([hidden]){animation:viewEnter .24s ease both}
