@@ -240,13 +240,9 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
 
 
 async def fetch_friend_list(account: dict) -> list[str]:
-    """自动获取抖音聊天页的好友列表（带重试和多种选择器）。
+    """自动获取抖音聊天页的好友列表。
 
-    流程：
-    1. 加载 cookie，打开聊天页。
-    2. 先判断是否在登录页 → 是则返回空列表并记录原因。
-    3. 等待会话列表渲染（多选择器 + 结构探测）。
-    4. 提取好友名称，去重后返回。
+    不依赖抖音前端类名（已哈希化），用结构特征 + 多策略提取。
     """
     from playwright.async_api import async_playwright
 
@@ -277,123 +273,121 @@ async def fetch_friend_list(account: dict) -> list[str]:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            # 等页面稳定后再判断登录态
             try:
                 await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass
             await page.wait_for_timeout(3000)
 
-            # 1) 判断是否在登录页：出现登录表单或二维码入口则视为未登录
-            is_login_page = await page.evaluate(
+            # 1) 判断是否在登录页 — 多信号综合判断
+            login_signals = await page.evaluate(
                 """() => {
-                    const phone = document.querySelector('input[type="tel"]');
-                    const qr = document.querySelector('[class*="qrcode"], [class*="QRCode"]');
-                    const loginBtn = [...document.querySelectorAll('button, div')].find(el => el.textContent && el.textContent.trim() === '登录');
-                    return !!(phone || qr || loginBtn);
+                    const url = window.location.href;
+                    const hasLoginPath = url.includes('/login') || url.includes('/passport');
+                    const hasQR = !!document.querySelector('img[src*="qrcode"], img[src*="qr"]') ||
+                        !!document.querySelector('[class*="qrcode"], [class*="QRCode"]');
+                    const hasScanText = [...document.querySelectorAll('*')].some(el =>
+                        el.textContent && el.textContent.trim() === '扫码登录'
+                    );
+                    const hasLoginBtn = [...document.querySelectorAll('button, div[role="button"]')].some(el =>
+                        el.textContent && ['登录', '立即登录', '密码登录', '验证码登录'].includes(el.textContent.trim())
+                    );
+                    const hasPhoneInput = !!document.querySelector('input[type="tel"]');
+                    const hasVerifyInput = !!document.querySelector('input[placeholder*="验证码"], input[placeholder*="手机号"]');
+                    const hasSearch = !!document.querySelector('input[placeholder*="搜索"], input[type="search"]');
+                    return {
+                        hasLoginPath, hasQR, hasScanText, hasLoginBtn,
+                        hasPhoneInput, hasVerifyInput, hasSearch
+                    };
                 }"""
             )
-            if is_login_page:
-                log.warning("当前处于登录页，Cookie 已失效或未登录，无法获取好友列表")
+
+            if login_signals.get("hasLoginPath") or (
+                login_signals.get("hasLoginBtn") and not login_signals.get("hasSearch")
+            ):
+                log.warning(
+                    "当前处于登录页，Cookie 已失效或未登录（signals: %s）",
+                    {k: v for k, v in login_signals.items() if v},
+                )
                 return []
 
-            # 2) 等待会话列表渲染 — 多种选择器依次尝试
-            conversation_list_locators = [
-                '[class*="conversationList"]',
-                '[class*="ConversationList"]',
-                '[class*="chatList"]',
-                '[class*="ChatList"]',
-                '[class*="sessionList"]',
-                '[class*="messageList"]',
-            ]
-            found_locator = None
-            for sel in conversation_list_locators:
-                try:
-                    loc = page.locator(sel).first
-                    if await loc.is_visible(timeout=3000):
-                        found_locator = loc
-                        log.info("使用选择器 %s 找到会话列表", sel)
-                        break
-                except Exception:
-                    continue
+            # 2) 等待聊天页渲染 — 以搜索框出现为准
+            try:
+                search_input = page.locator('input[placeholder*="搜索"], input[type="search"]').first
+                await search_input.wait_for(state="visible", timeout=15000)
+            except Exception:
+                pass
 
-            if found_locator is None:
-                # 结构探测：在页面左侧寻找可滚动且包含多个相似子元素的容器
-                log.info("主选择器未命中，尝试结构探测")
-                found = await page.evaluate(
-                    """() => {
-                        const candidates = document.querySelectorAll('div');
-                        for (const el of candidates) {
-                            const rect = el.getBoundingClientRect();
-                            if (rect.width > 100 && rect.height > 200 && el.children.length >= 3) {
-                                // 检查子元素是否相似（每个都包含 img + text）
-                                const childTexts = Array.from(el.children).map(c => {
-                                    const img = c.querySelector('img') ? 1 : 0;
-                                    const text = c.textContent ? c.textContent.trim().length : 0;
-                                    return img + (text > 0 ? 1 : 0);
-                                });
-                                const goodChildren = childTexts.filter(s => s >= 2).length;
-                                if (goodChildren >= 3) {
-                                    return {class: el.className.substring(0, 80), childCount: el.children.length};
-                                }
-                            }
-                        }
-                        return null;
-                    }"""
-                )
-                if found:
-                    log.info("结构探测找到会话列表: %s", found)
-
-            # 3) 提取好友名称
-            # 策略：从会话列表容器中找每个子元素里的文本（过滤掉太长的和太短的）
+            # 3) 提取好友名称 — 结构探测，不依赖类名
             items = await page.evaluate(
                 """() => {
                     const results = [];
-                    const all = document.querySelectorAll('div');
-                    for (const el of all) {
-                        const cls = el.className || '';
-                        if (typeof cls === 'string' && (cls.includes('conversation') || cls.includes('Conversation') || cls.includes('chat') || cls.includes('Chat') || cls.includes('session') || cls.includes('Session'))) {
-                            // 只取直接子元素
-                            for (const child of el.children) {
+                    const seen = new Set();
+
+                    // 策略1：找左侧会话列表区域
+                    const divs = document.querySelectorAll('div');
+                    for (const container of divs) {
+                        const rect = container.getBoundingClientRect();
+                        if (rect.left < 400 && rect.width > 200 && rect.height > 300 && container.children.length >= 3) {
+                            let validItems = 0;
+                            for (const child of container.children) {
+                                const hasImg = child.querySelector('img') !== null;
                                 const text = (child.textContent || '').trim();
-                                // 好友名称通常在 2-20 个字符
-                                if (text.length >= 2 && text.length <= 20 && !text.includes('\n')) {
-                                    // 排除明显的非名称文本
-                                    if (!text.includes('系统通知') && !text.includes('消息') && !text.includes('抖音')) {
+                                if (hasImg && text.length >= 2 && text.length <= 20 && !text.includes('\n')) {
+                                    if (!['系统通知', '消息', '抖音'].some(k => text.includes(k))) {
+                                        if (!seen.has(text)) {
+                                            seen.add(text);
+                                            results.push(text);
+                                        }
+                                        validItems++;
+                                    }
+                                }
+                            }
+                            if (validItems >= 3) break;
+                        }
+                    }
+
+                    // 策略2：用 role="listitem" 或 aria 标签
+                    if (results.length < 3) {
+                        const listItems = document.querySelectorAll('[role="listitem"], [role="option"]');
+                        for (const item of listItems) {
+                            const text = (item.textContent || '').trim();
+                            if (text.length >= 2 && text.length <= 20 && !text.includes('\n')) {
+                                if (!['系统通知', '消息', '抖音'].some(k => text.includes(k))) {
+                                    if (!seen.has(text)) {
+                                        seen.add(text);
                                         results.push(text);
                                     }
                                 }
                             }
                         }
                     }
-                    return results;
+
+                    // 策略3：找头像 + 短文本组合
+                    if (results.length < 3) {
+                        const all = document.querySelectorAll('div, a, li');
+                        for (const el of all) {
+                            const img = el.querySelector('img');
+                            if (!img) continue;
+                            const imgRect = img.getBoundingClientRect();
+                            if (imgRect.width < 15 || imgRect.width > 80) continue;
+                            const text = (el.textContent || '').trim();
+                            if (text.length >= 2 && text.length <= 20 && !text.includes('\n')) {
+                                if (!['系统通知', '消息', '抖音'].some(k => text.includes(k))) {
+                                    if (!seen.has(text)) {
+                                        seen.add(text);
+                                        results.push(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    return results.slice(0, 100);
                 }"""
             )
             if items:
                 friends.extend(items)
-
-            # 兜底：如果还没拿到，遍历所有可见的头像+文本组合
-            if not friends:
-                log.info("主策略未命中，尝试兜底文本提取")
-                fallback = await page.evaluate(
-                    """() => {
-                        const results = [];
-                        const all = document.querySelectorAll('div, a, li');
-                        for (const el of all) {
-                            // 查找包含 img 和短文本的元素
-                            const hasImg = el.querySelector('img') !== null;
-                            const text = (el.textContent || '').trim();
-                            if (hasImg && text.length >= 2 && text.length <= 20 && el.children.length <= 3) {
-                                if (!text.includes('系统通知') && !text.includes('抖音')) {
-                                    results.push(text);
-                                }
-                            }
-                        }
-                        return results.slice(0, 30);
-                    }"""
-                )
-                if fallback:
-                    friends.extend(fallback)
 
         except Exception as e:
             log.error("获取好友列表失败: %s", e, exc_info=True)
@@ -405,8 +399,8 @@ async def fetch_friend_list(account: dict) -> list[str]:
                 except Exception:
                     pass
 
-    # 去重
     return list(dict.fromkeys(friends))
+
 async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     """执行单个账号的续火任务"""
     from playwright.async_api import async_playwright
@@ -485,7 +479,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            search_input = page.locator('input.semi-input[placeholder="搜索"]').first
+            search_input = page.locator('input[placeholder*="搜索"], input[type="search"]').first
             try:
                 await search_input.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
             except Exception:
@@ -623,12 +617,18 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
 
 async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
-    """等待会话列表真正渲染"""
+    """等待会话列表真正渲染（用搜索框出现判断）。"""
     try:
-        conversation_locator = page.locator('[class*="conversation"], [class*="Conversation"]').first
-        await conversation_locator.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
+        search = page.get_by_placeholder("搜索", exact=False)
+        await search.first.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
+        log.info("  [%s] 搜索框已出现，聊天页就绪", account_name)
     except Exception:
-        log.info("  [%s] 会话列表未在预期时间内出现，将依赖搜索重试兜底", account_name)
+        try:
+            page.locator('input[type="search"], input[placeholder*="搜索"]').first.wait_for(
+                state="visible", timeout=5000
+            )
+        except Exception:
+            log.info("  [%s] 搜索框未在预期时间内出现", account_name)
 
     try:
         await page.wait_for_load_state("networkidle", timeout=CHAT_PAGE_IDLE_TIMEOUT)
@@ -639,31 +639,61 @@ async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
 async def _search_conversation(
     page: Any, search_input: Any, account_name: str, target_name: str
 ) -> Any:
-    """带重试地搜索会话"""
+    """带重试地搜索会话（不依赖 .SearchPanelitembox 类名）。"""
     for attempt in range(1, SEARCH_RETRY_LIMIT + 1):
         await search_input.fill("")
-        try:
-            await page.locator(".SearchPanelitembox").first.wait_for(
-                state="hidden", timeout=SEARCH_RESULT_TIMEOUT
-            )
-        except Exception:
-            pass
         await page.wait_for_timeout(SEARCH_INPUT_RESET_DELAY)
         await search_input.fill(target_name)
+        await page.wait_for_timeout(1500)
 
+        # 策略1：精确匹配目标名的可见元素
         try:
-            search_result = page.locator(".SearchPanelitembox").filter(
-                has=page.get_by_text(target_name, exact=True)
-            ).first
-            await search_result.wait_for(state="visible", timeout=SEARCH_RESULT_TIMEOUT)
-            return search_result
+            target_el = page.get_by_text(target_name, exact=True).first
+            if await target_el.is_visible(timeout=SEARCH_RESULT_TIMEOUT):
+                bbox = await target_el.bounding_box()
+                if bbox and bbox.get("width", 0) > 50:
+                    return target_el
         except Exception:
-            if attempt < SEARCH_RETRY_LIMIT:
-                log.info(
-                    "  [%s] 第 %d 次搜索未命中，%dms 后重试：%s",
-                    account_name, attempt, SEARCH_RETRY_INTERVAL, target_name
+            pass
+
+        # 策略2：JS 结构探测
+        try:
+            found = await page.evaluate(
+                """(targetName) => {
+                    const all = document.querySelectorAll('div, li, a');
+                    for (const el of all) {
+                        const text = (el.textContent || '').trim();
+                        if (text === targetName || text.includes(targetName)) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 50 && rect.height > 20 && rect.height < 200) {
+                                if (rect.top > 50 && rect.top < window.innerHeight * 0.7) {
+                                    el.setAttribute('data-das-search-hit', '1');
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                }""",
+                target_name,
+            )
+            if found:
+                result = page.locator("[data-das-search-hit='1']").first
+                await page.evaluate(
+                    """() => {
+                        document.querySelectorAll("[data-das-search-hit]").forEach(el => el.removeAttribute('data-das-search-hit'));
+                    }"""
                 )
-                await page.wait_for_timeout(SEARCH_RETRY_INTERVAL)
+                return result
+        except Exception:
+            pass
+
+        if attempt < SEARCH_RETRY_LIMIT:
+            log.info(
+                "  [%s] 第 %d 次搜索未命中，%dms 后重试：%s",
+                account_name, attempt, SEARCH_RETRY_INTERVAL, target_name
+            )
+            await page.wait_for_timeout(SEARCH_RETRY_INTERVAL)
 
     return None
 

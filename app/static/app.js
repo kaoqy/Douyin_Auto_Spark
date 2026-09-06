@@ -375,14 +375,15 @@ function openAccModal(id = null) {
       populateProxySelect($('#m-proxy'), a.proxy_id != null ? a.proxy_id : '');
       $('#m-enabled').checked = !!a.enabled;
       const initial = parseCookieString(a.cookie);
+      // 先填好文本框，再切 Tab — 避免 switchCookieTab 的联动重-parse 把字段清空
+      $('#m-cookie').value = a.cookie && !a.cookie.startsWith('[') ? a.cookie : '';
       if (initial.length) {
-        setCookieFields(initial, 'json');
+        setCookieFields(initial, 'rows');
         switchCookieTab('rows');
       } else {
         setCookieFields([], 'text');
         switchCookieTab('text');
       }
-      $('#m-cookie').value = a.cookie && !a.cookie.startsWith('[') ? a.cookie : '';
       updateCookieJson();
     });
   } else {
