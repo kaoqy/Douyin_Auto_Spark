@@ -155,6 +155,11 @@ def verify_account_cookie(account_id: int):
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
     result = verify_cookie_sync(acc.get("cookie", ""), acc.get("proxy", ""))
+    database.touch_account_verify(
+        account_id,
+        bool(result.get("valid")),
+        result.get("message", ""),
+    )
     return result
 
 

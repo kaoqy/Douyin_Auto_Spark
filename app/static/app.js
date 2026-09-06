@@ -243,7 +243,7 @@ $('#btn-quote-push').onclick = async () => {
 let editingAccId = null;
 async function loadAccounts() {
   const tb = $('#accTable tbody');
-  if (tb) tb.innerHTML = '<tr><td colspan="6"><div class="empty-state loading-state">加载账号中…</div></td></tr>';
+  if (tb) tb.innerHTML = '<tr><td colspan="7"><div class="empty-state loading-state">加载账号中…</div></td></tr>';
   try {
     const data = await api.get('/api/accounts');
     const accounts = asArray(data, 'accounts');
@@ -255,18 +255,23 @@ async function loadAccounts() {
         <td>${a.enabled ? '<span class="badge ok">启用</span>' : '<span class="badge gray">停用</span>'} · ${statusBadge(a.last_status)}</td>
         <td>${a.proxy ? '<span class="badge">SOCKS5 代理</span>' : '<span class="badge gray">直连</span>'}</td>
         <td>${a.last_run || '从未'}</td>
+        <td class="acc-verify-status">${a.last_verify_status === 'valid'
+            ? '<span class="badge ok">✅ 有效</span>'
+            : a.last_verify_status === 'invalid'
+              ? '<span class="badge bad" title="' + esc(a.last_verify_message || '') + '">❌ 失效</span>'
+              : '<span class="badge gray">未验证</span>'}</td>
         <td>
-          <button class="btn btn-ghost btn-sm" onclick="verifyAcc(${a.id})">验证</button>
+          <button class="btn btn-ghost btn-sm" data-act="verify" onclick="verifyAcc(${a.id})">验证</button>
           <button class="btn btn-ghost btn-sm" onclick="toggleAccEnabled(${a.id})">${a.enabled ? '停用' : '启用'}</button>
           <button class="btn btn-ghost btn-sm" onclick="openAccModal(${a.id})">编辑</button>
           <button class="btn btn-danger btn-sm" onclick="delAcc(${a.id})">删除</button>
         </td>
-      </tr>`).join('') : '<tr><td colspan="6" style="color:var(--muted)">暂无账号</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="7" style="color:var(--muted)">暂无账号</td></tr>';
     $('#accCheckAll').checked = false;
     updateSelCount();
     $('#btn-spark-selected').disabled = true;
   } catch (e) {
-    if (tb) tb.innerHTML = `<tr><td colspan="6"><div class="empty-state error-state">${esc(e.message || '账号加载失败')}</div></td></tr>`;
+    if (tb) tb.innerHTML = `<tr><td colspan="7"><div class="empty-state error-state">${esc(e.message || '账号加载失败')}</div></td></tr>`;
     toast('加载账号失败', 'err');
   }
 }
@@ -301,11 +306,38 @@ function batchSetEnabled(enabled) {
 }
 
 async function verifyAcc(id) {
-  toast('验证中…');
+  const row = document.querySelector(`#accTable tr[data-id="${id}"]`);
+  const btn = row && row.querySelector('button[data-act="verify"]');
+  const statusCell = row && row.querySelector('.acc-verify-status');
+  if (btn) {
+    btn.disabled = true;
+    btn.dataset.origText = btn.dataset.origText || btn.textContent;
+    btn.innerHTML = '<span class="spinner"></span> 验证中…';
+  }
+  if (statusCell) {
+    statusCell.dataset.origHtml = statusCell.dataset.origHtml ?? statusCell.innerHTML;
+    statusCell.innerHTML = '<span class="badge warn"><span class="spinner"></span> 验证中</span>';
+  }
   try {
     const r = await api.post('/api/accounts/' + id + '/verify', {});
-    toast(r.valid ? '✅ Cookie 有效' : '❌ ' + r.message, r.valid ? 'good' : 'err');
-  } catch (e) { toast('验证失败', 'err'); }
+    const msg = r.valid ? '✅ Cookie 有效' : '❌ ' + (r.message || '失败');
+    if (statusCell) {
+      statusCell.innerHTML = r.valid
+        ? '<span class="badge ok">✅ 有效</span>'
+        : '<span class="badge bad" title="' + esc(r.message || '') + '">❌ 失效</span>';
+    }
+    toast(msg, r.valid ? 'good' : 'err');
+  } catch (e) {
+    if (statusCell) {
+      statusCell.innerHTML = '<span class="badge bad" title="' + esc(e.message || '') + '">❌ 错误</span>';
+    }
+    toast('验证失败：' + (e.message || e), 'err');
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = btn.dataset.origText || '验证';
+    }
+  }
 }
 
 async function toggleAccEnabled(id) {

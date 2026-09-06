@@ -73,7 +73,10 @@ def init_db() -> None:
             created_at TEXT DEFAULT (datetime('now', 'localtime')),
             last_run TEXT,
             last_status TEXT,
-            last_message TEXT
+            last_message TEXT,
+            last_verify_at TEXT,
+            last_verify_status TEXT,
+            last_verify_message TEXT
         );
 
         -- 好友表（续火对象）
@@ -162,12 +165,22 @@ def init_db() -> None:
 
 
 def _migrate_db(conn: sqlite3.Connection) -> None:
-    """数据库迁移（增量添加字段等）"""
-    # 添加 geo_city 字段（v1.0 后新增）
-    cols = [row[1] for row in conn.execute("PRAGMA table_info(proxies)").fetchall()]
-    if "geo_city" not in cols:
+    """数据库迁移（增量添加字段等）。"""
+    proxy_cols = {row[1] for row in conn.execute("PRAGMA table_info(proxies)").fetchall()}
+    if "geo_city" not in proxy_cols:
         conn.execute("ALTER TABLE proxies ADD COLUMN geo_city TEXT DEFAULT ''")
-        conn.commit()
+
+    account_cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+    account_migrations = {
+        "last_verify_at": "TEXT",
+        "last_verify_status": "TEXT",
+        "last_verify_message": "TEXT",
+    }
+    for column, column_type in account_migrations.items():
+        if column not in account_cols:
+            conn.execute(f"ALTER TABLE accounts ADD COLUMN {column} {column_type}")
+
+    conn.commit()
 
 
 def _seed_defaults(conn: sqlite3.Connection) -> None:
@@ -324,6 +337,16 @@ def touch_account_result(account_id: int, status: str, message: str = "") -> Non
     conn.execute(
         "UPDATE accounts SET last_run = datetime('now', 'localtime'), last_status = ?, last_message = ? WHERE id = ?",
         (status, message, account_id),
+    )
+    conn.commit()
+
+
+def touch_account_verify(account_id: int, valid: bool, message: str = "") -> None:
+    """保存账号 Cookie 最近一次验证结果。"""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE accounts SET last_verify_at = datetime('now', 'localtime'), last_verify_status = ?, last_verify_message = ? WHERE id = ?",
+        ("valid" if valid else "invalid", message, account_id),
     )
     conn.commit()
 

@@ -176,22 +176,57 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            search_input = page.locator('input.semi-input[placeholder="搜索"]').first
+            # 抖音聊天页结构会动态调整，不能只依赖单一 semi-input 选择器。
+            # 先等待页面稳定，再通过多个登录态特征综合判断。
             try:
-                await search_input.wait_for(state="visible", timeout=15000)
-                return {"valid": True, "message": "Cookie 有效"}
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
                 pass
 
-            for marker in ("登录", "扫码登录", "立即登录", "二维码登录"):
+            valid_selectors = (
+                'input[placeholder="搜索"]',
+                'input[placeholder*="搜索"]',
+                '[contenteditable="true"]',
+                'textarea[placeholder*="消息"]',
+                '[class*="conversation"]',
+                '[class*="message-list"]',
+                '[class*="chat-list"]',
+            )
+            for selector in valid_selectors:
                 try:
-                    btn = page.get_by_text(marker, exact=False).first
-                    if await btn.is_visible(timeout=2000):
+                    locator = page.locator(selector).first
+                    if await locator.is_visible(timeout=3000):
+                        return {"valid": True, "message": "Cookie 有效，已进入抖音消息页面"}
+                except Exception:
+                    continue
+
+            # 明确出现登录入口时才判定 Cookie 失效。
+            for marker in ("登录", "扫码登录", "立即登录", "二维码登录", "验证码登录", "密码登录"):
+                try:
+                    locator = page.get_by_text(marker, exact=False).first
+                    if await locator.is_visible(timeout=2000):
                         return {"valid": False, "message": "Cookie 已失效，需要重新登录"}
                 except Exception:
                     continue
 
-            return {"valid": False, "message": "无法确认 Cookie 状态"}
+            # 页面可能因风控、验证码或结构变化而无法直接识别，返回具体页面信息，
+            # 不再把这种情况笼统显示为“无法确认 Cookie 状态”。
+            current_url = page.url
+            title = ""
+            try:
+                title = await page.title()
+            except Exception:
+                pass
+            if "/chat" in current_url and "login" not in current_url.lower():
+                return {
+                    "valid": True,
+                    "message": "Cookie 可能有效：已进入消息页，但页面控件尚未完全加载",
+                    "uncertain": True,
+                }
+            return {
+                "valid": False,
+                "message": f"未进入抖音消息页，可能遇到登录验证或风控（页面：{title or current_url}）",
+            }
 
         except Exception as e:
             log.error("验证账号异常: %s", e, exc_info=True)
