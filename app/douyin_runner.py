@@ -602,70 +602,77 @@ async def fetch_friend_list(account: dict) -> dict:
             # 2) 等待聊天页渲染 — 并发探查多个“聊天页”指示器
             ready_selectors = (
                 'input[placeholder*="搜索"]',
-                '[class*="conversation"]',
-                '[class*="message-list"]',
-                '[class*="chat-list"]',
                 '[contenteditable="true"]',
+                'img[src*="avatar"], img[alt*="头像"]',
+                '[class*="chat-list"], [class*="conversation"], [class*="message-list"]',
             )
             ready_tasks = [
-                _probe_selector_visible(page, sel, timeout_ms=8000)
+                _probe_selector_visible(page, sel, timeout_ms=5000)
                 for sel in ready_selectors
             ]
             ready_results = await asyncio.gather(*ready_tasks, return_exceptions=True)
-            if not any(r is True for r in ready_results):
-                log.warning("聊天页指示器均未出现，尝试提取会话列表（可能为加载缓慢）")
+            ready_ok = any(r is True for r in ready_results)
+            if not ready_ok:
+                log.warning("聊天页指示器均未出现，仍尝试提取会话列表（可能为加载缓慢）")
+                # 额外等 2s 看看是不是慢网络
+                await page.wait_for_timeout(2000)
 
             # 3) 提取好友名称 — 结构探测，不依赖类名
+            
             items = await page.evaluate(
                 """() => {
                     var results = [];
                     var seen = {};
-                    var BLOCKED = ['系统通知', '消息', '抖音'];
                     function blocked(t) {
-                        for (var i = 0; i < BLOCKED.length; i++) {
-                            if (t.indexOf(BLOCKED[i]) >= 0) return true;
-                        }
+                        if (t === '系统通知' || t === '消息' || t === '抖音' || t === '抖音小助手' || t === '抖音官方') return true;
+                        if (t.indexOf('系统') === 0) return true;
+                        if (t.indexOf('通知') === 0) return true;
                         return false;
                     }
                     function add(t) {
                         t = (t || '').trim();
-                        if (t.length < 2 || t.length > 20) return false;
+                        if (t.length < 2 || t.length > 30) return false;
                         if (t.indexOf('\\n') >= 0) return false;
                         if (blocked(t)) return false;
                         if (seen[t]) return false;
+                        if (/^\d+$/.test(t)) return false;
                         seen[t] = true;
                         results.push(t);
                         return true;
                     }
-                    var divs = document.querySelectorAll('div');
-                    for (var i = 0; i < divs.length; i++) {
-                        var container = divs[i];
-                        var rect = container.getBoundingClientRect();
-                        if (rect.left < 400 && rect.width > 200 && rect.height > 300 && container.children.length >= 3) {
-                            var validItems = 0;
-                            for (var j = 0; j < container.children.length; j++) {
-                                var child = container.children[j];
-                                if (!child.querySelector('img')) continue;
-                                if (add(child.textContent || '')) validItems++;
+                    // 策略1：找 img 旁边的短文本
+                    var imgs = document.querySelectorAll('img');
+                    for (var i = 0; i < imgs.length; i++) {
+                        var img = imgs[i];
+                        var rect = img.getBoundingClientRect();
+                        if (rect.width < 15 || rect.width > 80) continue;
+                        if (rect.height < 15 || rect.height > 80) continue;
+                        var parent = img.parentElement;
+                        if (!parent) continue;
+                        var children = parent.children;
+                        for (var j = 0; j < children.length; j++) {
+                            var c = children[j];
+                            if (c === img) continue;
+                            var t = (c.textContent || '').trim();
+                            if (t.length >= 1 && t.length <= 30 && t.indexOf('\n') < 0) {
+                                add(t);
+                                break;
                             }
-                            if (validItems >= 3) break;
                         }
                     }
+                    // 策略2：找左侧栏中含 img 的短文本元素
                     if (results.length < 3) {
-                        var listItems = document.querySelectorAll('[role="listitem"], [role="option"]');
-                        for (var i2 = 0; i2 < listItems.length; i2++) {
-                            add(listItems[i2].textContent || '');
-                        }
-                    }
-                    if (results.length < 3) {
-                        var all = document.querySelectorAll('div, a, li');
-                        for (var i3 = 0; i3 < all.length; i3++) {
-                            var el = all[i3];
-                            var img = el.querySelector('img');
-                            if (!img) continue;
-                            var r = img.getBoundingClientRect();
-                            if (r.width < 15 || r.width > 80) continue;
-                            add(el.textContent || '');
+                        var all = document.querySelectorAll('div, li, a, span');
+                        for (var i2 = 0; i2 < all.length; i2++) {
+                            var el = all[i2];
+                            var rect2 = el.getBoundingClientRect();
+                            if (rect2.left > 400) continue;
+                            if (rect2.width < 30) continue;
+                            if (!el.querySelector('img')) continue;
+                            var t2 = (el.textContent || '').trim();
+                            if (t2.length < 1 || t2.length > 30) continue;
+                            if (t2.indexOf('\n') >= 0) continue;
+                            add(t2);
                         }
                     }
                     return results.slice(0, 100);
