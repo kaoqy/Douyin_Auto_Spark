@@ -54,6 +54,8 @@ def run_spark_task(trigger_type: str = "manual", account_ids: list[int] | None =
         "progress": 0,
         "accounts_total": 0,
         "accounts_done": 0,
+        "current_account": "",
+        "message": "正在初始化...",
     }
 
     log.info("开始续火任务 %s（%s）", task_id, trigger_type)
@@ -79,12 +81,14 @@ def run_spark_task(trigger_type: str = "manual", account_ids: list[int] | None =
         total = success = fail = 0
 
         for idx, acc in enumerate(accounts, start=1):
+            _current_run["current_account"] = acc["name"]
             # 防封等待
             if idx > 1 or policy.should_wait():
                 wait = policy.wait_between_accounts(idx, len(accounts))
                 if wait:
                     _current_run["message"] = f"防封等待 {wait:.0f}s 后处理账号 {acc['name']}"
 
+            _current_run["message"] = f"正在处理账号 {acc['name']} ({idx}/{len(accounts)})"
             result = run_account_spark_sync(acc, task_id)
 
             # 更新账号状态

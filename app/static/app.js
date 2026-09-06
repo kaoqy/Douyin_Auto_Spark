@@ -1197,9 +1197,11 @@ async function pollRun() {
       const s = await api.get('/api/tasks/run');
       if (s.run && s.run.status === 'running') {
         const r = s.run;
-        $('#runInfo').textContent = `账号 ${r.accounts_done || 0}/${r.accounts_total || 0}（${r.progress || 0}%）· ${r.started_at}`;
+        const subMsg = r.message || `账号 ${r.current_account || ''}`;
+        $('#runInfo').textContent = `账号 ${r.accounts_done || 0}/${r.accounts_total || 0}（${r.progress || 0}%）· ${subMsg}`;
         $('#runBar').style.width = (r.progress || 0) + '%';
-        addRunLine(`运行中… 已完成 ${r.accounts_done || 0}/${r.accounts_total || 0} 个账号`);
+        const acct = r.current_account ? ` · 正在处理 ${r.current_account}` : '';
+        addRunLine(`运行中… 已完成 ${r.accounts_done || 0}/${r.accounts_total || 0} 个账号${acct}`);
       } else {
         clearInterval(pollTimer);
         $('#runBar').style.width = '100%';

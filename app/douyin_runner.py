@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -137,6 +138,193 @@ def _parse_proxy_url(proxy_url: str) -> dict | None:
         return None
 
 
+def _has_socks5_auth(proxy_config: dict | None) -> bool:
+    """判断 Playwright proxy config 是否是带认证的 SOCKS5（Chromium 不支持）。"""
+    if not proxy_config:
+        return False
+    server = proxy_config.get("server", "")
+    # server 形如 socks5://host:port 或 socks5h://host:port
+    is_socks = server.startswith("socks5://") or server.startswith("socks5h://")
+    if not is_socks:
+        return False
+    return bool(proxy_config.get("username")) or bool(proxy_config.get("password"))
+
+
+class LocalProxy:
+    """本地无认证代理转发。
+
+    Chromium 内核不支持带认证的 SOCKS5 代理。
+    本类在容器内起一个 gost 进程，把远端带认证的代理转发到本地无认证端口，
+    让 Playwright 通过 127.0.0.1:PORT 直连即可。
+
+    不带认证或解析失败的代理 ``ok=True`` 但 ``playwright_config`` 可能为 None，调用方按直连处理。
+    带认证的 SOCKS5 会启动 gost 进程，``playwright_config`` 指向 127.0.0.1。
+
+    用法::
+
+        local_proxy = LocalProxy(proxy_url)
+        try:
+            await local_proxy.start()
+            if not local_proxy.ok:
+                # 启动失败：local_proxy.error 包含原因
+                return
+            launch_options["proxy"] = local_proxy.playwright_config
+            # ... use launch_options ...
+        finally:
+            await local_proxy.stop()
+    """
+
+    _PORT_RANGE_START = 19080
+    _PORT_RANGE_END = 19180
+    _next_port = _PORT_RANGE_START
+    _proc_lock: "asyncio.Lock | None" = None
+    _gost_path: str | None = None
+    _gost_checked: bool = False
+
+    def __init__(self, proxy_url: str):
+        self.proxy_url = proxy_url
+        self.playwright_config: dict | None = None
+        self.port: int | None = None
+        self._proc: Any = None
+        self._ok = False
+        self._error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self._ok
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+    @classmethod
+    def _get_lock(cls) -> "asyncio.Lock":
+        if cls._proc_lock is None:
+            cls._proc_lock = asyncio.Lock()
+        return cls._proc_lock
+
+    @classmethod
+    def _resolve_gost(cls) -> str | None:
+        if not cls._gost_checked:
+            env_path = os.environ.get("GOST_BIN", "").strip()
+            if env_path and os.path.isfile(env_path) and os.access(env_path, os.X_OK):
+                cls._gost_path = env_path
+            else:
+                resolved = shutil.which("gost")
+                cls._gost_path = resolved or "/usr/local/bin/gost"
+            cls._gost_checked = True
+        return cls._gost_path if (cls._gost_path and os.path.isfile(cls._gost_path)) else None
+
+    def _allocate_port(self) -> int:
+        LocalProxy._next_port += 1
+        if LocalProxy._next_port > LocalProxy._PORT_RANGE_END:
+            LocalProxy._next_port = LocalProxy._PORT_RANGE_START
+        return LocalProxy._next_port
+
+    async def start(self) -> None:
+        """准备代理配置；带认证 SOCKS5 时启动 gost 进程。"""
+        proxy_config = _parse_proxy_url(self.proxy_url)
+        if not proxy_config:
+            self._error = "代理 URL 解析失败"
+            return
+        if not _has_socks5_auth(proxy_config):
+            self.playwright_config = proxy_config
+            self._ok = True
+            return
+
+        gost = self._resolve_gost()
+        if not gost:
+            self._error = "gost 未安装：容器缺少 gost，镜像构建失败？"
+            log.error(self._error)
+            return
+
+        async with self._get_lock():
+            self.port = self._allocate_port()
+            scheme, _, hostport = proxy_config["server"].partition("://")
+            if proxy_config.get("username"):
+                userinfo = proxy_config["username"]
+                if proxy_config.get("password"):
+                    userinfo += f":{proxy_config['password']}"
+                forward = f"{scheme}://{userinfo}@{hostport}"
+            else:
+                forward = f"{scheme}://{hostport}"
+            cmd = [
+                gost,
+                "-L", f"socks5://127.0.0.1:{self.port}",
+                "-F", forward,
+            ]
+            try:
+                self._proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except Exception as e:
+                self._error = f"启动 gost 失败：{e}"
+                log.error(self._error)
+                return
+
+            for _ in range(20):
+                if await self._can_connect():
+                    break
+                await asyncio.sleep(0.1)
+            else:
+                self._error = "gost 启动后端口 2s 内未就绪"
+                log.error(self._error)
+                await self._kill()
+                return
+
+            self.playwright_config = {"server": f"socks5://127.0.0.1:{self.port}"}
+            self._ok = True
+            log.info(
+                "本地代理转发已启动：127.0.0.1:%d -> %s",
+                self.port, _safe_proxy_label(self.proxy_url),
+            )
+
+    async def stop(self) -> None:
+        if self._proc is None:
+            return
+        await self._kill()
+        log.info("本地代理转发已关闭：127.0.0.1:%d", self.port)
+
+    async def _kill(self) -> None:
+        proc = self._proc
+        self._proc = None
+        if proc is None:
+            return
+        try:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2)
+                except Exception:
+                    pass
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            log.warning("关闭 gost 进程异常：%s", e)
+
+    async def _can_connect(self) -> bool:
+        if self.port is None:
+            return False
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", self.port),
+                timeout=0.3,
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+
 async def verify_cookie(cookie: str, proxy: str = "") -> dict:
     """验证账号 Cookie 是否有效"""
     from playwright.async_api import async_playwright
@@ -146,13 +334,17 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
     except Exception as e:
         return {"valid": False, "message": f"Cookie 解析失败: {e}"}
 
+    local_proxy = LocalProxy(proxy)
+    await local_proxy.start()
+    if proxy and not local_proxy.ok:
+        await local_proxy.stop()
+        return {"valid": False, "message": f"代理初始化失败：{local_proxy.error}"}
     async with async_playwright() as p:
         browser = None
         try:
             launch_options = {"headless": True}
-            proxy_config = _parse_proxy_url(proxy)
-            if proxy_config:
-                launch_options["proxy"] = proxy_config
+            if local_proxy.playwright_config:
+                launch_options["proxy"] = local_proxy.playwright_config
             browser = await p.chromium.launch(**launch_options)
             context = await browser.new_context()
             # 先按原状加载；sameSite 之类的参数在 to_playwright_cookie 中已经过验证。
@@ -237,6 +429,7 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
                     await browser.close()
                 except Exception:
                     pass
+            await local_proxy.stop()
 
 
 async def fetch_friend_list(account: dict) -> list[str]:
@@ -255,13 +448,18 @@ async def fetch_friend_list(account: dict) -> list[str]:
         return []
 
     friends: list[str] = []
+    local_proxy = LocalProxy(proxy_url)
+    await local_proxy.start()
+    if proxy_url and not local_proxy.ok:
+        await local_proxy.stop()
+        log.error("代理初始化失败：%s", local_proxy.error)
+        return []
     async with async_playwright() as p:
         browser = None
         try:
             launch_options = {"headless": True}
-            proxy_config = _parse_proxy_url(proxy_url)
-            if proxy_config:
-                launch_options["proxy"] = proxy_config
+            if local_proxy.playwright_config:
+                launch_options["proxy"] = local_proxy.playwright_config
             browser = await p.chromium.launch(**launch_options)
             context = await browser.new_context()
             try:
@@ -398,6 +596,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
                     await browser.close()
                 except Exception:
                     pass
+            await local_proxy.stop()
 
     return list(dict.fromkeys(friends))
 
@@ -444,6 +643,14 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             return result
     include_source = database.get_setting("yiyan_include_source", "1") == "1"
 
+    local_proxy = LocalProxy(proxy_url)
+    await local_proxy.start()
+    if proxy_url and not local_proxy.ok:
+        await local_proxy.stop()
+        result.status = "failed"
+        result.message = f"代理初始化失败：{local_proxy.error}"
+        log.error("  [%s] %s", account["name"], result.message)
+        return result
     async with async_playwright() as p:
         browser = None
         try:
@@ -453,9 +660,8 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             launch_options = {"headless": headless}
             if browser_path:
                 launch_options["executable_path"] = browser_path
-            proxy_config = _parse_proxy_url(proxy_url)
-            if proxy_config:
-                launch_options["proxy"] = proxy_config
+            if local_proxy.playwright_config:
+                launch_options["proxy"] = local_proxy.playwright_config
             browser = await p.chromium.launch(**launch_options)
 
             context = await browser.new_context()
@@ -612,6 +818,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     await browser.close()
                 except Exception:
                     pass
+            await local_proxy.stop()
 
     return result
 

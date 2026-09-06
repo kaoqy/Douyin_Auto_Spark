@@ -27,6 +27,8 @@ ENV PYTHONUNBUFFERED=1 \
     APP_PORT=8000
 
 # 安装系统依赖和 Playwright 浏览器
+# gost 用于本地无认证代理转发，绕开 Chromium 不支持 SOCKS5 认证的限制
+ARG GOST_VERSION=2.12.0
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         tzdata ca-certificates \
@@ -34,6 +36,10 @@ RUN apt-get update \
         libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 \
         libxfixes3 libxrandr2 libgbm1 libpango-1.0-0 \
         libcairo2 libasound2 libatspi2.0-0 \
+    && curl -fsSL "https://github.com/ginuerzh/gost/releases/download/v${GOST_VERSION}/gost_${GOST_VERSION}_linux_amd64.tar.gz" \
+        | tar -xz -C /usr/local/bin gost \
+    && chmod +x /usr/local/bin/gost \
+    && /usr/local/bin/gost -V \
     && ln -fs /usr/share/zoneinfo/Asia/Shanghai /etc/localtime \
     && dpkg-reconfigure -f noninteractive tzdata \
     && rm -rf /var/lib/apt/lists/*
