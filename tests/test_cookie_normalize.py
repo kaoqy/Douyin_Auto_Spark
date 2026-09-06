@@ -69,6 +69,22 @@ def test_same_site_always_valid():
     assert pw["sameSite"] == "None"
 
 
+def test_same_site_no_restriction_maps_to_none():
+    """Chrome DevTools 导出中的 no_restriction 应被映射为 None。"""
+    item = DouyinCookieItem.from_dict(
+        {"name": "x", "value": "y", "sameSite": "no_restriction"}
+    )
+    assert item.sameSite == "None"
+
+
+def test_same_site_unset_maps_to_lax():
+    """Chrome DevTools 导出中的 Unset 应被映射为 Lax。"""
+    item = DouyinCookieItem.from_dict(
+        {"name": "x", "value": "y", "sameSite": "Unset"}
+    )
+    assert item.sameSite == "Lax"
+
+
 def test_explicit_samesite_preserved():
     item = DouyinCookieItem.from_dict(
         {"name": "x", "value": "y", "sameSite": "Strict"}

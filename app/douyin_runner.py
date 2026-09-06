@@ -155,7 +155,24 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
                 launch_options["proxy"] = proxy_config
             browser = await p.chromium.launch(**launch_options)
             context = await browser.new_context()
-            await context.add_cookies([c.to_playwright_cookie() for c in cookies])
+            # 先按原状加载；sameSite 之类的参数在 to_playwright_cookie 中已经过验证。
+            try:
+                await context.add_cookies([c.to_playwright_cookie() for c in cookies])
+            except Exception as add_err:
+                # 后备方案：只传 name+value+domain，其它去掉
+                log.warning("add_cookies 初次失败 (%s)，后备只传 name+value+domain", add_err)
+                minimal = []
+                for c in cookies:
+                    mc = {"name": c.name, "value": c.value}
+                    if c.domain:
+                        mc["domain"] = c.domain
+                    elif c.url:
+                        mc["url"] = c.url
+                    else:
+                        mc["url"] = "https://www.douyin.com"
+                    mc["path"] = "/"
+                    minimal.append(mc)
+                await context.add_cookies(minimal)
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
@@ -209,7 +226,22 @@ async def fetch_friend_list(account: dict) -> list[str]:
                 launch_options["proxy"] = proxy_config
             browser = await p.chromium.launch(**launch_options)
             context = await browser.new_context()
-            await context.add_cookies([c.to_playwright_cookie() for c in cookies])
+            try:
+                await context.add_cookies([c.to_playwright_cookie() for c in cookies])
+            except Exception as add_err:
+                log.warning("add_cookies 初次失败 (%s)，后备只传 name+value+domain", add_err)
+                minimal = []
+                for c in cookies:
+                    mc = {"name": c.name, "value": c.value}
+                    if c.domain:
+                        mc["domain"] = c.domain
+                    elif c.url:
+                        mc["url"] = c.url
+                    else:
+                        mc["url"] = "https://www.douyin.com"
+                    mc["path"] = "/"
+                    minimal.append(mc)
+                await context.add_cookies(minimal)
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
@@ -337,7 +369,22 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             browser = await p.chromium.launch(**launch_options)
 
             context = await browser.new_context()
-            await context.add_cookies([c.to_playwright_cookie() for c in cookies])
+            try:
+                await context.add_cookies([c.to_playwright_cookie() for c in cookies])
+            except Exception as add_err:
+                log.warning("add_cookies 初次失败 (%s)，后备只传 name+value+domain", add_err)
+                minimal = []
+                for c in cookies:
+                    mc = {"name": c.name, "value": c.value}
+                    if c.domain:
+                        mc["domain"] = c.domain
+                    elif c.url:
+                        mc["url"] = c.url
+                    else:
+                        mc["url"] = "https://www.douyin.com"
+                    mc["path"] = "/"
+                    minimal.append(mc)
+                await context.add_cookies(minimal)
 
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
@@ -575,7 +622,13 @@ _DIRECT_DNS_PORT = 53
 
 
 def _split_proxy_url(proxy_url: str) -> tuple[str, int, str, str]:
-    """解析 socks5://[user:pass@]host:port 为 (host, port, user, password)。"""
+    """解析 socks5://[user:pass@]host:port 为 (host, port, user, password)。
+
+    也支持：
+    - http://[user:pass@]host:port （会报 ValueError 提示只支持 SOCKS5）
+    - host:port:user:pwd
+    - host:port
+    """
     if not proxy_url:
         raise ValueError("代理 URL 为空")
     if "://" in proxy_url:
@@ -593,8 +646,21 @@ def _split_proxy_url(proxy_url: str) -> tuple[str, int, str, str]:
         host_part = rest
     if ":" not in host_part:
         raise ValueError("代理 URL 缺少端口：socks5://host:port")
-    host, port_s = host_part.rsplit(":", 1)
-    return host.strip(), int(port_s), user, pwd
+    # 处理 host:port:user:pwd
+    parts = host_part.split(":")
+    if len(parts) >= 2:
+        host = parts[0]
+        try:
+            port = int(parts[1])
+        except ValueError:
+            raise ValueError(f"代理端口必须为数字：{parts[1]!r}")
+        if len(parts) >= 4 and not user:
+            # host:port:user:pwd 形式
+            user = parts[2]
+            pwd = parts[3]
+    else:
+        raise ValueError("代理 URL 缺少端口：socks5://host:port")
+    return host.strip(), port, user, pwd
 
 
 def _socks5_connect(proxy_url: str, target_host: str, target_port: int) -> socket.socket:

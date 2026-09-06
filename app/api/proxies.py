@@ -90,7 +90,7 @@ def update_one(proxy_id: int, data: dict):
         merged.update(payload)
         url = database.build_proxy_url(merged) or payload.get("url", existing.get("url", ""))
         payload["url"] = url
-    database.update_proxy(proxy_id, payload)
+    database.update_proxy(proxy_id, **payload)
     return _public(database.get_proxy(proxy_id))
 
 
@@ -169,13 +169,13 @@ def detect_url(data: dict):
     
     # 如果传了 proxy_id，顺便保存归属地
     if pid and result.get("ok"):
-        database.update_proxy(int(pid), {
-            "geo_country": result.get("country", ""),
-            "geo_region": result.get("region", ""),
-            "geo_city": result.get("city", ""),
-            "geo_country_code": result.get("country_code", ""),
-            "geo_ip": result.get("ip", ""),
-        })
+        database.update_proxy(int(pid),
+            geo_country=result.get("country", ""),
+            geo_region=result.get("region", ""),
+            geo_city=result.get("city", ""),
+            geo_country_code=result.get("country_code", ""),
+            geo_ip=result.get("ip", ""),
+        )
     
     return {k: v for k, v in result.items() if k != "_t"}
 

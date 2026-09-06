@@ -12,7 +12,7 @@ DEFAULT_COOKIE_DOMAIN = ".douyin.com"
 DEFAULT_COOKIE_PATH = "/"
 
 # Playwright 识别的 sameSite 枚举
-_VALID_SAME_SITE = {"Strict", "Lax", "None", "no_restriction"}
+_VALID_SAME_SITE = {"Strict", "Lax", "None", "no_restriction", "Unset"}
 
 
 @dataclass
@@ -65,8 +65,14 @@ class DouyinCookieItem:
             self.path = DEFAULT_COOKIE_PATH
         if not self.sameSite:
             self.sameSite = "Lax"
-        if self.sameSite not in _VALID_SAME_SITE:
-            # 降级到 None
+        # Playwright 只接受三个值；DevTools 导出的 no_restriction / Unset 需映射。
+        # 允许用户的 no_restriction 当 None 看待（cross-site cookie）。
+        if self.sameSite == "no_restriction":
+            self.sameSite = "None"
+        elif self.sameSite == "Unset":
+            self.sameSite = "Lax"
+        elif self.sameSite not in _VALID_SAME_SITE:
+            # 其它未知值降级为 None
             self.sameSite = "None"
 
     def to_playwright_cookie(self) -> dict:
