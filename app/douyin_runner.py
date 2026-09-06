@@ -30,6 +30,31 @@ SEARCH_INPUT_RESET_DELAY = 500
 SCREENSHOT_DIR = Path(os.environ.get("DAS_DATA_DIR", str(Path(__file__).resolve().parent.parent / "data"))) / "screenshots"
 
 
+# === 错误信息翻译 ===
+def _humanize_playwright_error(err: Exception, used_proxy: bool = False) -> str:
+    """把 Playwright 异常翻译为用户能看懂的提示。"""
+    text = str(err)
+    if "ERR_PROXY_CONNECTION_FAILED" in text:
+        return "代理连接失败：检查 SOCKS5 地址/端口/账号密码是否正确，或代理服务器是否在线"
+    if "ERR_TIMED_OUT" in text or "Timeout" in type(err).__name__:
+        return "网络超时：检查是否能直连 douyin.com，或换更稳定的代理"
+    if "ERR_NAME_NOT_RESOLVED" in text:
+        return "DNS 解析失败：检查代理 DNS 设置，或网络是否能解析 douyin.com"
+    if "ERR_CONNECTION_REFUSED" in text:
+        return "连接被拒绝：检查 douyin.com 是否可达或代理端口"
+    if "ERR_TUNNEL_CONNECTION_FAILED" in text:
+        return "代理隧道失败：检查认证信息与代理协议是否匹配"
+    if "ERR_INVALID_HTTP_RESPONSE" in text:
+        return "代理返回非法响应：可能不是 SOCKS5 代理"
+    if "Cookie should have a url or a domain/path pair" in text:
+        return "Cookie 缺少 domain 或 url：所有 cookie 必须有 domain 或 url 字段"
+    if "net::ERR_ABORTED" in text:
+        return "导航被中止：检查代理是否稳定"
+    if used_proxy:
+        return f"使用代理时出错：{text.splitlines()[0] if text else type(err).__name__}"
+    return f"{type(err).__name__}: {text.splitlines()[0] if text else err}"
+
+
 @dataclass
 class AccountResult:
     """单个账号的续火结果"""
@@ -64,19 +89,49 @@ def _safe_proxy_label(proxy_url: str) -> str:
 
 
 def _parse_proxy_url(proxy_url: str) -> dict | None:
-    """解析 SOCKS5 代理 URL 为 Playwright proxy 配置"""
+    """解析代理 URL 为 Playwright proxy 配置。
+
+    支持的格式：
+    - socks5://user:pass@host:port
+    - socks5://host:port
+    - http://user:pass@host:port  （HTTPS 代理）
+    - http://host:port
+    - host:port:user:pass
+    - host:port
+    """
     if not proxy_url:
         return None
+    proxy_url = proxy_url.strip()
     try:
-        m = re.match(r'socks5://(?:(?P<user>[^:@]+):(?P<pass>[^@]*)@)?(?P<host>[^:]+):(?P<port>\d+)', proxy_url)
-        if not m:
-            return None
-        proxy = {"server": f"socks5://{m.group('host')}:{m.group('port')}"}
-        if m.group("user"):
-            proxy["username"] = m.group("user")
-        if m.group("pass"):
-            proxy["password"] = m.group("pass")
-        return proxy
+        # 带 scheme 的标准 URL
+        # 用 \S+ 保证非空白；密码允许包含特殊字符用 [^@]*
+        m = re.match(
+            r"^(?P<scheme>https?|socks5?)://(?:(?P<user>[^:@/]+)(?::(?P<pass>[^@]*))?@)?(?P<host>[^:/]+):(?P<port>\d+)",
+            proxy_url,
+        )
+        if m:
+            scheme = m.group("scheme")
+            host = m.group("host")
+            port = m.group("port")
+            proxy = {"server": f"{scheme}://{host}:{port}"}
+            if m.group("user"):
+                proxy["username"] = m.group("user")
+            if m.group("pass"):
+                proxy["password"] = m.group("pass")
+            return proxy
+        # 无 scheme：ip:port[:user:pass]
+        m2 = re.match(
+            r"^(?P<host>[^:]+):(?P<port>\d+)(?::(?P<user>[^:]+)(?::(?P<pass>.*))?)?$",
+            proxy_url,
+        )
+        if m2:
+            proxy = {"server": f"socks5://{m2.group('host')}:{m2.group('port')}"}
+            if m2.group("user"):
+                proxy["username"] = m2.group("user")
+            if m2.group("pass"):
+                proxy["password"] = m2.group("pass")
+            return proxy
+        return None
     except Exception as e:
         log.error("解析代理 URL 失败: %s", e)
         return None
@@ -123,7 +178,7 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
 
         except Exception as e:
             log.error("验证账号异常: %s", e, exc_info=True)
-            return {"valid": False, "message": f"验证失败: {type(e).__name__}: {e}"}
+            return {"valid": False, "message": f"验证失败: {_humanize_playwright_error(e, used_proxy=bool(proxy))}"}
         finally:
             if browser:
                 try:
@@ -211,10 +266,14 @@ async def fetch_friend_list(account: dict) -> list[str]:
                         pass
 
         except Exception as e:
-            log.error("获取好友列表失败: %s", e)
+            log.error("获取好友列表失败: %s", e, exc_info=True)
+            return []
         finally:
             if browser:
-                await browser.close()
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
     # 去重
     return list(dict.fromkeys(friends))
@@ -409,10 +468,13 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
         except Exception as e:
             log.exception("  [%s] 账号执行异常：%s", account["name"], e)
             result.status = "failed"
-            result.message = str(e)
+            result.message = _humanize_playwright_error(e, used_proxy=bool(proxy_url))
         finally:
             if browser:
-                await browser.close()
+                try:
+                    await browser.close()
+                except Exception:
+                    pass
 
     return result
 

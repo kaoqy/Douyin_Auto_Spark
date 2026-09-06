@@ -31,7 +31,10 @@ def _parse_link(url: str) -> dict:
 
 
 def _public(p: dict) -> dict:
-    """对外输出：绝不返回含认证信息的完整代理链接。"""
+    """对外输出：绝不返回含认证信息的完整代理链接。
+
+    返回 `proxy_id` 供前端在账号表单中携带，服务端根据 id 查真 URL。
+    """
     p = dict(p)
     raw = p.get("url", "") or ""
     if not raw and p.get("ip"):
@@ -39,6 +42,7 @@ def _public(p: dict) -> dict:
     p["password"] = "***" if p.get("password") else ""
     p["has_auth"] = bool(p.get("username") or p.get("password"))
     p["url"] = database.mask_proxy_url(raw)
+    p["proxy_id"] = p.get("id")
     return p
 
 
@@ -103,17 +107,18 @@ def test_proxy(proxy_id: int):
     if not p:
         raise HTTPException(404, "代理不存在")
     url = p.get("url") or database.build_proxy_url(p)
-    
+    if not url:
+        raise HTTPException(400, "代理 URL 为空，请先在编辑页填写 IP/端口或完整链接")
+
     started = time.perf_counter()
     result = test_proxy_sync(url)
     elapsed_ms = int((time.perf_counter() - started) * 1000)
-    
+
     ok = result.get("ok", False)
     message = result.get("message", "")
-    if ok and not message.endswith("ms"):
+    if ok and "ms" not in message:
         message += f" · {elapsed_ms} ms"
-    
-    # 保存测试结果和归属地信息
+
     update_fields = {
         "last_test": "ok" if ok else "fail",
         "last_latency_ms": elapsed_ms,
@@ -126,9 +131,15 @@ def test_proxy(proxy_id: int):
         update_fields["geo_city"] = result.get("city", "")
         update_fields["geo_country_code"] = result.get("country_code", "")
         update_fields["geo_ip"] = result.get("ip", "")
-    database.update_proxy(proxy_id, update_fields)
-    
-    return {"ok": ok, "message": message, "latency_ms": elapsed_ms, "geo": result}
+    database.update_proxy(proxy_id, **update_fields)
+
+    return {
+        "ok": ok,
+        "message": message,
+        "latency_ms": elapsed_ms,
+        "url_masked": database.mask_proxy_url(url),
+        "geo": result,
+    }
 
 
 @router.post("/detect")
@@ -167,3 +178,25 @@ def detect_url(data: dict):
         })
     
     return {k: v for k, v in result.items() if k != "_t"}
+
+
+@router.post("/test-url")
+def test_url(data: dict):
+    """直接测试一个 URL（无需先保存）。"""
+    url = (data.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "请提供完整链接 socks5://user:pwd@host:port")
+    started = time.perf_counter()
+    result = test_proxy_sync(url)
+    elapsed_ms = int((time.perf_counter() - started) * 1000)
+    ok = result.get("ok", False)
+    message = result.get("message", "")
+    if ok and "ms" not in message:
+        message += f" · {elapsed_ms} ms"
+    return {
+        "ok": ok,
+        "message": message,
+        "latency_ms": elapsed_ms,
+        "url_masked": database.mask_proxy_url(url),
+        "geo": result,
+    }

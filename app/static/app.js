@@ -315,11 +315,16 @@ async function toggleAccEnabled(id) {
   catch (e) { toast('操作失败', 'err'); }
 }
 
-async function populateProxySelect(sel, selectedUrl = '') {
+async function populateProxySelect(sel, selectedValue = '') {
   let proxies = [];
-  try { const list = await api.get('/api/proxies'); proxies = asArray(list, 'proxies').filter(p => p.enabled !== false); } catch(e) {}
-  const opt = (v, t) => `<option value="${esc(v)}"${v === selectedUrl ? ' selected' : ''}>${esc(t)}</option>`;
-  sel.innerHTML = opt('', '自动 / 直连') + proxies.map(p => opt(p.url, p.label || p.ip)).join('');
+  try {
+    const list = await api.get('/api/proxies');
+    proxies = asArray(list, 'proxies').filter(p => p.enabled !== false);
+  } catch (e) {}
+  // 前端发送 proxy_id，服务端查表后返回真 url；
+  // 仍然接受原始 url（向后兼容）。
+  const opt = (v, t) => `<option value="${esc(v)}"${String(v) === String(selectedValue) ? ' selected' : ''}>${esc(t)}</option>`;
+  sel.innerHTML = opt('', '自动 / 直连') + proxies.map(p => opt(p.proxy_id, p.label || p.ip)).join('');
 }
 
 /* ===== Cookie 编辑器 ===== */
@@ -335,7 +340,7 @@ function openAccModal(id = null) {
   if (id) {
     api.get('/api/accounts/' + id).then(a => {
       $('#m-name').value = a.name;
-      populateProxySelect($('#m-proxy'), a.proxy || '');
+      populateProxySelect($('#m-proxy'), a.proxy_id != null ? a.proxy_id : '');
       $('#m-enabled').checked = !!a.enabled;
       const initial = parseCookieString(a.cookie);
       if (initial.length) {

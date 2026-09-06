@@ -24,7 +24,12 @@ def test_parse_plain_socks5_proxy():
 
 
 def test_parse_invalid_proxy_returns_none():
-    assert douyin_runner._parse_proxy_url("http://127.0.0.1:8080") is None
+    # 只有乱码才会被拒绝
+    for t in ["not a url", "@@@", "abc:def", "1.2.3.4:abc", "1.2.3.4"]:
+        assert douyin_runner._parse_proxy_url(t) is None, t
+    # http/https 现在也支持
+    r = douyin_runner._parse_proxy_url("http://127.0.0.1:8080")
+    assert r == {"server": "http://127.0.0.1:8080"}
 
 
 def test_normalize_template_rejects_unknown_placeholder():

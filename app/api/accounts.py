@@ -7,18 +7,57 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from .. import auth, database
+from ..douyin_cookie import cookies_to_json, parse_cookie_json
 from ..douyin_runner import verify_cookie_sync, fetch_friend_list_sync
 
 log = logging.getLogger("das.api.accounts")
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 
+def _resolve_proxy(value):
+    """根据前端提交的 proxy 值（id 或 url）获取真实可用的 URL。
+
+    - 空值 / None / 空字符串：直连，返回 ""
+    - 整数：当作代理节点 id，查表后返回真实 url
+    - 字符串：以 socks5:// / http:// 开头，认作 url，直接返回
+    - 数字字符串：当 id 查
+    - 其余：原样返回（直连或尝试）
+    """
+    if value is None:
+        return ""
+    if isinstance(value, int):
+        proxy = database.get_proxy(value)
+        return (proxy or {}).get("url", "") or database.build_proxy_url(proxy or {})
+    s = str(value).strip()
+    if not s:
+        return ""
+    if s.isdigit():
+        proxy = database.get_proxy(int(s))
+        return (proxy or {}).get("url", "") or database.build_proxy_url(proxy or {})
+    # 仍然允许传 url（向后兼容）
+    if "://" in s:
+        # 拒绝脱敏字符串
+        if "***" in s:
+            return ""
+        return s
+    return s
+
+
 @router.get("")
 def list_accounts():
     accounts = database.get_accounts()
-    # 脱敏代理 URL
     for acc in accounts:
-        acc["proxy"] = database.mask_proxy_url(acc.get("proxy", ""))
+        proxy_url = acc.get("proxy", "")
+        acc["proxy"] = database.mask_proxy_url(proxy_url)
+        # 反查 id 供前端代理选择
+        if proxy_url:
+            row = database.find_proxy_by_url(proxy_url)
+            if row:
+                acc["proxy_id"] = row["id"]
+            else:
+                acc["proxy_id"] = None
+        else:
+            acc["proxy_id"] = None
     return {"accounts": accounts}
 
 
@@ -26,7 +65,7 @@ def list_accounts():
 def create_account(body: dict[str, Any]):
     name = (body.get("name") or "").strip()
     cookie = body.get("cookie", "")
-    proxy = (body.get("proxy") or "").strip()
+    proxy = _resolve_proxy(body.get("proxy"))
     enabled = body.get("enabled", True)
 
     if not name:
@@ -34,29 +73,18 @@ def create_account(body: dict[str, Any]):
     if not cookie:
         raise HTTPException(status_code=400, detail="Cookie 不能为空")
 
-    # 验证 Cookie 格式
+    # 验证 Cookie 格式：复用 douyin_cookie.parse_cookie_json
     try:
-        import json
-        if isinstance(cookie, str):
-            data = json.loads(cookie)
-        elif isinstance(cookie, list):
-            data = cookie
-        else:
-            raise ValueError("Cookie 必须是 JSON 数组字符串或列表")
-        if not isinstance(data, list):
-            raise ValueError("Cookie 必须是非空 JSON 数组")
-        if len(data) == 0:
-            raise ValueError("Cookie 数组不能为空")
-        # 验证每个元素都有 name 和 value
-        for item in data:
-            if not isinstance(item, dict) or "name" not in item or "value" not in item:
-                raise ValueError("Cookie 数组每个元素必须包含 name 和 value 字段")
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=400, detail=f"Cookie JSON 解析失败：{e}")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        items = parse_cookie_json(cookie)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Cookie 格式错误：{e}")
+    if not items:
+        raise HTTPException(status_code=400, detail="Cookie 数组不能为空")
+    for it in items:
+        if not it.name or not it.value:
+            raise HTTPException(status_code=400, detail="Cookie 数组每个元素必须包含 name 和 value 字段")
+    # 存储时使用标准化后的 JSON（补全 domain/path/sameSite）
+    cookie = cookies_to_json(items)
 
     aid = database.add_account(name, cookie, proxy, enabled)
     return {"id": aid, "message": "账号添加成功"}
@@ -68,9 +96,16 @@ def update_account(account_id: int, body: dict[str, Any]):
     if "name" in body:
         kwargs["name"] = body["name"]
     if "cookie" in body:
-        kwargs["cookie"] = body["cookie"]
+        cookie = body["cookie"]
+        try:
+            items = parse_cookie_json(cookie)
+            if items:
+                cookie = cookies_to_json(items)
+        except Exception:
+            pass  # 保留原值（用户可能不需要自动修复）
+        kwargs["cookie"] = cookie
     if "proxy" in body:
-        kwargs["proxy"] = body["proxy"].strip() if body["proxy"] else ""
+        kwargs["proxy"] = _resolve_proxy(body["proxy"])
     if "enabled" in body:
         kwargs["enabled"] = 1 if body["enabled"] else 0
 
@@ -89,7 +124,13 @@ def get_account(account_id: int):
     acc = database.get_account(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
-    acc["proxy"] = database.mask_proxy_url(acc.get("proxy", ""))
+    proxy_url = acc.get("proxy", "")
+    acc["proxy"] = database.mask_proxy_url(proxy_url)
+    if proxy_url:
+        row = database.find_proxy_by_url(proxy_url)
+        acc["proxy_id"] = row["id"] if row else None
+    else:
+        acc["proxy_id"] = None
     return acc
 
 
@@ -97,7 +138,7 @@ def get_account(account_id: int):
 def verify_cookie(body: dict[str, Any]):
     """验证 Cookie 是否有效（不需要先创建账号）"""
     cookie = body.get("cookie", "")
-    proxy = (body.get("proxy") or "").strip()
+    proxy = _resolve_proxy(body.get("proxy"))
     if not cookie:
         raise HTTPException(status_code=400, detail="Cookie 不能为空")
     try:

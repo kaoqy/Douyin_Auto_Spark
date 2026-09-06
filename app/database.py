@@ -629,6 +629,17 @@ def get_proxy(proxy_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def find_proxy_by_url(url: str) -> dict | None:
+    """通过完整 url 查找代理节点（用于前端反查 id）。"""
+    if not url:
+        return None
+    conn = get_conn()
+    row = conn.execute("SELECT * FROM proxies WHERE url = ? LIMIT 1", (url,)).fetchone()
+    if row:
+        return dict(row)
+    return None
+
+
 def build_proxy_url(data: dict) -> str:
     """根据字段构建 socks5:// 链接"""
     ip = data.get("ip", "")
