@@ -240,7 +240,14 @@ async def verify_cookie(cookie: str, proxy: str = "") -> dict:
 
 
 async def fetch_friend_list(account: dict) -> list[str]:
-    """自动获取抖音聊天页的好友列表（带重试和多种选择器）"""
+    """自动获取抖音聊天页的好友列表（带重试和多种选择器）。
+
+    流程：
+    1. 加载 cookie，打开聊天页。
+    2. 先判断是否在登录页 → 是则返回空列表并记录原因。
+    3. 等待会话列表渲染（多选择器 + 结构探测）。
+    4. 提取好友名称，去重后返回。
+    """
     from playwright.async_api import async_playwright
 
     proxy_url = account.get("proxy", "") or ""
@@ -251,7 +258,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
         log.error("Cookie 解析失败: %s", e)
         return []
 
-    friends = []
+    friends: list[str] = []
     async with async_playwright() as p:
         browser = None
         try:
@@ -265,72 +272,128 @@ async def fetch_friend_list(account: dict) -> list[str]:
                 await context.add_cookies([c.to_playwright_cookie() for c in cookies])
             except Exception as add_err:
                 log.warning("add_cookies 初次失败 (%s)，后备只传 name+value+domain", add_err)
-                minimal = []
-                for c in cookies:
-                    mc = {"name": c.name, "value": c.value}
-                    if c.domain:
-                        mc["domain"] = c.domain
-                    elif c.url:
-                        mc["url"] = c.url
-                    else:
-                        mc["url"] = "https://www.douyin.com"
-                    mc["path"] = "/"
-                    minimal.append(mc)
+                minimal = [{"name": c.name, "value": c.value, "domain": c.domain or ".douyin.com", "path": "/"} for c in cookies]
                 await context.add_cookies(minimal)
             page = await context.new_page()
             await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded")
 
-            search_input = page.locator('input.semi-input[placeholder="搜索"]').first
+            # 等页面稳定后再判断登录态
             try:
-                await search_input.wait_for(state="visible", timeout=15000)
+                await page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
-                log.warning("搜索框未出现，无法获取好友列表")
-                return []
-
-            # 等待会话列表渲染
+                pass
             await page.wait_for_timeout(3000)
 
-            # 多种选择器依次尝试
-            selectors = [
-                '[class*="conversationItem"]',
-                '[class*="ConversationItem"]',
-                '.SearchPanelitembox',
-                '[class*="chatItem"]',
-                '[class*="session-item"]',
-                '[class*="sessionItem"]',
-            ]
+            # 1) 判断是否在登录页：出现登录表单或二维码入口则视为未登录
+            is_login_page = await page.evaluate(
+                """() => {
+                    const phone = document.querySelector('input[type="tel"]');
+                    const qr = document.querySelector('[class*="qrcode"], [class*="QRCode"]');
+                    const loginBtn = [...document.querySelectorAll('button, div')].find(el => el.textContent && el.textContent.trim() === '登录');
+                    return !!(phone || qr || loginBtn);
+                }"""
+            )
+            if is_login_page:
+                log.warning("当前处于登录页，Cookie 已失效或未登录，无法获取好友列表")
+                return []
 
-            conversation_items = []
-            for sel in selectors:
+            # 2) 等待会话列表渲染 — 多种选择器依次尝试
+            conversation_list_locators = [
+                '[class*="conversationList"]',
+                '[class*="ConversationList"]',
+                '[class*="chatList"]',
+                '[class*="ChatList"]',
+                '[class*="sessionList"]',
+                '[class*="messageList"]',
+            ]
+            found_locator = None
+            for sel in conversation_list_locators:
                 try:
-                    items = page.locator(sel).all()
-                    if items:
-                        conversation_items = items
-                        log.info("使用选择器 %s 找到 %d 个会话", sel, len(items))
+                    loc = page.locator(sel).first
+                    if await loc.is_visible(timeout=3000):
+                        found_locator = loc
+                        log.info("使用选择器 %s 找到会话列表", sel)
                         break
                 except Exception:
                     continue
 
-            for item in conversation_items:
-                try:
-                    name_el = item.locator('[class*="name"], [class*="Name"], [class*="title"], [class*="Title"]').first
-                    name = await name_el.text_content(timeout=2000)
-                    if name and name.strip():
-                        friends.append(name.strip())
-                except Exception:
-                    pass
+            if found_locator is None:
+                # 结构探测：在页面左侧寻找可滚动且包含多个相似子元素的容器
+                log.info("主选择器未命中，尝试结构探测")
+                found = await page.evaluate(
+                    """() => {
+                        const candidates = document.querySelectorAll('div');
+                        for (const el of candidates) {
+                            const rect = el.getBoundingClientRect();
+                            if (rect.width > 100 && rect.height > 200 && el.children.length >= 3) {
+                                // 检查子元素是否相似（每个都包含 img + text）
+                                const childTexts = Array.from(el.children).map(c => {
+                                    const img = c.querySelector('img') ? 1 : 0;
+                                    const text = c.textContent ? c.textContent.trim().length : 0;
+                                    return img + (text > 0 ? 1 : 0);
+                                });
+                                const goodChildren = childTexts.filter(s => s >= 2).length;
+                                if (goodChildren >= 3) {
+                                    return {class: el.className.substring(0, 80), childCount: el.children.length};
+                                }
+                            }
+                        }
+                        return null;
+                    }"""
+                )
+                if found:
+                    log.info("结构探测找到会话列表: %s", found)
 
-            # 兜底：如果还没拿到，尝试取所有可见文本
+            # 3) 提取好友名称
+            # 策略：从会话列表容器中找每个子元素里的文本（过滤掉太长的和太短的）
+            items = await page.evaluate(
+                """() => {
+                    const results = [];
+                    const all = document.querySelectorAll('div');
+                    for (const el of all) {
+                        const cls = el.className || '';
+                        if (typeof cls === 'string' && (cls.includes('conversation') || cls.includes('Conversation') || cls.includes('chat') || cls.includes('Chat') || cls.includes('session') || cls.includes('Session'))) {
+                            // 只取直接子元素
+                            for (const child of el.children) {
+                                const text = (child.textContent || '').trim();
+                                // 好友名称通常在 2-20 个字符
+                                if (text.length >= 2 && text.length <= 20 && !text.includes('\n')) {
+                                    // 排除明显的非名称文本
+                                    if (!text.includes('系统通知') && !text.includes('消息') && !text.includes('抖音')) {
+                                        results.push(text);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return results;
+                }"""
+            )
+            if items:
+                friends.extend(items)
+
+            # 兜底：如果还没拿到，遍历所有可见的头像+文本组合
             if not friends:
-                log.info("主选择器未命中，尝试兜底文本提取")
-                all_items = page.locator('.SearchPanelitembox, [class*="conversation"], [class*="chatItem"]').all()
-                for item in all_items:
-                    try:
-                        text = await item.text_content(timeout=2000)
-                        if text and len(text.strip()) > 0 and len(text.strip()) < 50:
-                            friends.append(text.strip().split('\n')[0])
-                    except Exception:
-                        pass
+                log.info("主策略未命中，尝试兜底文本提取")
+                fallback = await page.evaluate(
+                    """() => {
+                        const results = [];
+                        const all = document.querySelectorAll('div, a, li');
+                        for (const el of all) {
+                            // 查找包含 img 和短文本的元素
+                            const hasImg = el.querySelector('img') !== null;
+                            const text = (el.textContent || '').trim();
+                            if (hasImg && text.length >= 2 && text.length <= 20 && el.children.length <= 3) {
+                                if (!text.includes('系统通知') && !text.includes('抖音')) {
+                                    results.push(text);
+                                }
+                            }
+                        }
+                        return results.slice(0, 30);
+                    }"""
+                )
+                if fallback:
+                    friends.extend(fallback)
 
         except Exception as e:
             log.error("获取好友列表失败: %s", e, exc_info=True)
@@ -344,8 +407,6 @@ async def fetch_friend_list(account: dict) -> list[str]:
 
     # 去重
     return list(dict.fromkeys(friends))
-
-
 async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     """执行单个账号的续火任务"""
     from playwright.async_api import async_playwright
