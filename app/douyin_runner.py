@@ -20,8 +20,8 @@ from .douyin_cookie import parse_cookie_json
 log = logging.getLogger("das.runner")
 
 # 超时配置（毫秒）
-CHAT_PAGE_READY_TIMEOUT = 30000
-CHAT_PAGE_IDLE_TIMEOUT = 10000
+CHAT_PAGE_READY_TIMEOUT = 20000
+CHAT_PAGE_IDLE_TIMEOUT = 3000
 SEARCH_RESULT_TIMEOUT = 5000
 SEARCH_RETRY_LIMIT = 3
 SEARCH_RETRY_INTERVAL = 2000
@@ -565,21 +565,29 @@ async def fetch_friend_list(account: dict) -> dict:
                 return {"friends": [], "message": f"打开抖音页失败：{e}", "reason": "exception"}
 
             # 1) 探查登录状态。只在“明确”信号才返回；不依赖 networkidle。
-            login_signals = await page.evaluate(
-                """() => {
-                    const url = window.location.href;
-                    const hasLoginPath = url.includes('/login') || url.includes('/passport');
-                    const hasQR = !!document.querySelector('img[src*="qrcode"], img[src*="qr"]') ||
-                        !!document.querySelector('[class*="qrcode"], [class*="QRCode"]');
-                    const hasScanText = [...document.querySelectorAll('*')].some(el =>
-                        el.textContent && el.textContent.trim() === '扫码登录'
-                    );
-                    const hasPhoneInput = !!document.querySelector('input[type="tel"]');
-                    const hasVerifyInput = !!document.querySelector('input[placeholder*="验证码"], input[placeholder*="手机号"]');
-                    const hasSearch = !!document.querySelector('input[placeholder*="搜索"], input[type="search"]');
-                    return {hasLoginPath, hasQR, hasScanText, hasPhoneInput, hasVerifyInput, hasSearch};
-                }"""
-            )
+            try:
+                login_signals = await page.evaluate(
+                    """() => {
+                        var url = window.location.href || '';
+                        var hasLoginPath = url.indexOf('/login') >= 0 || url.indexOf('/passport') >= 0;
+                        var qrImg = document.querySelector('img[src*="qrcode"], img[src*="qr"]');
+                        var qrDiv = document.querySelector('[class*="qrcode"], [class*="QRCode"]');
+                        var hasQR = !!(qrImg || qrDiv);
+                        var all = document.querySelectorAll('*');
+                        var hasScanText = false;
+                        for (var i = 0; i < all.length; i++) {
+                            var t = (all[i].textContent || '').trim();
+                            if (t === '扫码登录') { hasScanText = true; break; }
+                        }
+                        var hasPhoneInput = !!document.querySelector('input[type="tel"]');
+                        var hasVerifyInput = !!document.querySelector('input[placeholder*="验证码"], input[placeholder*="手机号"]');
+                        var hasSearch = !!document.querySelector('input[placeholder*="搜索"], input[type="search"]');
+                        return {hasLoginPath: hasLoginPath, hasQR: hasQR, hasScanText: hasScanText, hasPhoneInput: hasPhoneInput, hasVerifyInput: hasVerifyInput, hasSearch: hasSearch};
+                    }"""
+                )
+            except Exception as e:
+                log.warning("login_signals 评估失败（继续）：%s", e)
+                login_signals = {}
 
             # 只有“多个强信号同时出现”才判定登录页；只是 hasLoginBtn 不够
             if login_signals.get("hasLoginPath") and (
@@ -610,68 +618,56 @@ async def fetch_friend_list(account: dict) -> dict:
             # 3) 提取好友名称 — 结构探测，不依赖类名
             items = await page.evaluate(
                 """() => {
-                    const results = [];
-                    const seen = new Set();
-
-                    // 策略1：找左侧会话列表区域
-                    const divs = document.querySelectorAll('div');
-                    for (const container of divs) {
-                        const rect = container.getBoundingClientRect();
+                    var results = [];
+                    var seen = {};
+                    var BLOCKED = ['系统通知', '消息', '抖音'];
+                    function blocked(t) {
+                        for (var i = 0; i < BLOCKED.length; i++) {
+                            if (t.indexOf(BLOCKED[i]) >= 0) return true;
+                        }
+                        return false;
+                    }
+                    function add(t) {
+                        t = (t || '').trim();
+                        if (t.length < 2 || t.length > 20) return false;
+                        if (t.indexOf('\\n') >= 0) return false;
+                        if (blocked(t)) return false;
+                        if (seen[t]) return false;
+                        seen[t] = true;
+                        results.push(t);
+                        return true;
+                    }
+                    var divs = document.querySelectorAll('div');
+                    for (var i = 0; i < divs.length; i++) {
+                        var container = divs[i];
+                        var rect = container.getBoundingClientRect();
                         if (rect.left < 400 && rect.width > 200 && rect.height > 300 && container.children.length >= 3) {
-                            let validItems = 0;
-                            for (const child of container.children) {
-                                const hasImg = child.querySelector('img') !== null;
-                                const text = (child.textContent || '').trim();
-                                if (hasImg && text.length >= 2 && text.length <= 20 && !text.includes('\n')) {
-                                    if (!['系统通知', '消息', '抖音'].some(k => text.includes(k))) {
-                                        if (!seen.has(text)) {
-                                            seen.add(text);
-                                            results.push(text);
-                                        }
-                                        validItems++;
-                                    }
-                                }
+                            var validItems = 0;
+                            for (var j = 0; j < container.children.length; j++) {
+                                var child = container.children[j];
+                                if (!child.querySelector('img')) continue;
+                                if (add(child.textContent || '')) validItems++;
                             }
                             if (validItems >= 3) break;
                         }
                     }
-
-                    // 策略2：用 role="listitem" 或 aria 标签
                     if (results.length < 3) {
-                        const listItems = document.querySelectorAll('[role="listitem"], [role="option"]');
-                        for (const item of listItems) {
-                            const text = (item.textContent || '').trim();
-                            if (text.length >= 2 && text.length <= 20 && !text.includes('\n')) {
-                                if (!['系统通知', '消息', '抖音'].some(k => text.includes(k))) {
-                                    if (!seen.has(text)) {
-                                        seen.add(text);
-                                        results.push(text);
-                                    }
-                                }
-                            }
+                        var listItems = document.querySelectorAll('[role="listitem"], [role="option"]');
+                        for (var i2 = 0; i2 < listItems.length; i2++) {
+                            add(listItems[i2].textContent || '');
                         }
                     }
-
-                    // 策略3：找头像 + 短文本组合
                     if (results.length < 3) {
-                        const all = document.querySelectorAll('div, a, li');
-                        for (const el of all) {
-                            const img = el.querySelector('img');
+                        var all = document.querySelectorAll('div, a, li');
+                        for (var i3 = 0; i3 < all.length; i3++) {
+                            var el = all[i3];
+                            var img = el.querySelector('img');
                             if (!img) continue;
-                            const imgRect = img.getBoundingClientRect();
-                            if (imgRect.width < 15 || imgRect.width > 80) continue;
-                            const text = (el.textContent || '').trim();
-                            if (text.length >= 2 && text.length <= 20 && !text.includes('\n')) {
-                                if (!['系统通知', '消息', '抖音'].some(k => text.includes(k))) {
-                                    if (!seen.has(text)) {
-                                        seen.add(text);
-                                        results.push(text);
-                                    }
-                                }
-                            }
+                            var r = img.getBoundingClientRect();
+                            if (r.width < 15 || r.width > 80) continue;
+                            add(el.textContent || '');
                         }
                     }
-
                     return results.slice(0, 100);
                 }"""
             )
@@ -851,13 +847,25 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 log.info("  [%s] 已打开私信：%s", account["name"], target_name)
                 await page.wait_for_timeout(2000)
 
-                editor_input = page.locator(
-                    '.messageEditorimChatEditorContainer '
-                    '[data-slate-editor="true"][contenteditable="true"]'
-                ).first
-                try:
-                    await editor_input.wait_for(state="visible", timeout=10000)
-                except Exception:
+                # 多策略定位输入框（抖音 class 名带哈希，每次构建会变）
+                editor_input = None
+                for sel in (
+                    '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]',
+                    '[data-slate-editor="true"][contenteditable="true"]',
+                    'div[contenteditable="true"][data-slate-editor]',
+                    'div[contenteditable="true"][role="textbox"]',
+                    '[contenteditable="true"][data-gramm="false"]',
+                    'div[contenteditable="true"]:not([data-block])',
+                    'div[contenteditable="true"]',
+                ):
+                    try:
+                        loc = page.locator(sel).first
+                        if await loc.is_visible(timeout=2000):
+                            editor_input = loc
+                            break
+                    except Exception:
+                        continue
+                if editor_input is None:
                     log.warning("  [%s] 无法定位输入框", account["name"])
                     missing_names.append(target_name)
                     result.detail.append({
@@ -868,7 +876,11 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     result.fail += 1
                     continue
 
-                await editor_input.click()
+                try:
+                    await editor_input.click()
+                except Exception:
+                    # 后备：聚焦 body 后用键盘
+                    pass
                 await page.wait_for_timeout(500)
 
                 # 渲染并发送消息
@@ -966,11 +978,12 @@ async def _search_conversation(
         try:
             found = await page.evaluate(
                 """(targetName) => {
-                    const all = document.querySelectorAll('div, li, a');
-                    for (const el of all) {
-                        const text = (el.textContent || '').trim();
-                        if (text === targetName || text.includes(targetName)) {
-                            const rect = el.getBoundingClientRect();
+                    var all = document.querySelectorAll('div, li, a');
+                    for (var i = 0; i < all.length; i++) {
+                        var el = all[i];
+                        var text = (el.textContent || '').trim();
+                        if (text === targetName || text.indexOf(targetName) >= 0) {
+                            var rect = el.getBoundingClientRect();
                             if (rect.width > 50 && rect.height > 20 && rect.height < 200) {
                                 if (rect.top > 50 && rect.top < window.innerHeight * 0.7) {
                                     el.setAttribute('data-das-search-hit', '1');
@@ -987,7 +1000,10 @@ async def _search_conversation(
                 result = page.locator("[data-das-search-hit='1']").first
                 await page.evaluate(
                     """() => {
-                        document.querySelectorAll("[data-das-search-hit]").forEach(el => el.removeAttribute('data-das-search-hit'));
+                        var all = document.querySelectorAll('[data-das-search-hit]');
+                        for (var i = 0; i < all.length; i++) {
+                            all[i].removeAttribute('data-das-search-hit');
+                        }
                     }"""
                 )
                 return result
