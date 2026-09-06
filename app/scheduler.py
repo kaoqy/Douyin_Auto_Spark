@@ -109,6 +109,9 @@ def run_spark_task(trigger_type: str = "manual", account_ids: list[int] | None =
             success += result.success
             fail += result.fail
 
+            # 写入日志：账号级 + 每个好友级。web 日志页面才能看到。
+            _write_run_logs(acc, task_id, result)
+
             _current_run["accounts_done"] += 1
             _current_run["progress"] = round(len(overall) / len(accounts) * 100)
 
@@ -263,3 +266,44 @@ def stop_scheduler() -> None:
     if scheduler.running:
         scheduler.shutdown(wait=False)
         log.info("调度器已停止")
+
+
+def _write_run_logs(account: dict, task_id: str, result) -> None:
+    """把单次账号执行结果写入 logs 表，让 web 日志页面能看到。
+
+    - 账号级：result.status / result.message
+    - 每个 detail：result.detail[i]（target / status / message）
+    """
+    try:
+        channel = "SOCKS5 代理" if (account.get("proxy") or "") else "直连"
+        # 账号级
+        if result.status and result.status != "success":
+            database.add_log({
+                "task_id": task_id,
+                "account_id": account.get("id"),
+                "account_name": account.get("name", "未命名账号"),
+                "target_name": "",
+                "status": result.status,
+                "channel": channel,
+                "message": result.message or result.status,
+                "detail": "",
+            })
+        # 好友级
+        for d in (result.detail or []):
+            target = d.get("target") or ""
+            status = d.get("status") or ""
+            message = d.get("message") or status
+            if not target and not message:
+                continue
+            database.add_log({
+                "task_id": task_id,
+                "account_id": account.get("id"),
+                "account_name": account.get("name", "未命名账号"),
+                "target_name": target,
+                "status": status,
+                "channel": channel,
+                "message": message,
+                "detail": "",
+            })
+    except Exception as e:
+        log.warning("写入日志失败：%s", e)

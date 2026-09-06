@@ -515,13 +515,18 @@ async def _probe_text_visible(page, text: str, timeout_ms: int) -> bool:
 
 
 
-async def fetch_friend_list(account: dict) -> list[str]:
+async def fetch_friend_list(account: dict) -> dict:
     """自动获取抖音聊天页的好友列表。
 
     关键优化：
     1. LocalProxyPool 复用 gost 进程
     2. 用 commit 等待代替 networkidle 10s + wait_for_timeout 3s
     3. 只在“明确”登录页信号才早返回；模糊信号让页加载后重新评估
+
+    返回 dict：
+    - friends: list[str]  好友名列表（去重）
+    - message: str        给前端的提示信息
+    - reason: str         失败原因（"" 表示成功）
     """
     from playwright.async_api import async_playwright
 
@@ -531,13 +536,13 @@ async def fetch_friend_list(account: dict) -> list[str]:
         cookies = parse_cookie_json(account["cookie"])
     except Exception as e:
         log.error("Cookie 解析失败: %s", e)
-        return []
+        return {"friends": [], "message": f"Cookie 解析失败：{e}", "reason": "no_cookies"}
 
     friends: list[str] = []
     local_proxy = await LocalProxyPool.acquire(proxy_url)
     if proxy_url and not local_proxy.ok:
         log.error("代理初始化失败：%s", local_proxy.error)
-        return []
+        return {"friends": [], "message": f"代理初始化失败：{local_proxy.error}", "reason": "proxy_failed"}
     async with async_playwright() as p:
         browser = None
         try:
@@ -557,7 +562,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
                 await page.goto("https://www.douyin.com/chat", wait_until="commit", timeout=20000)
             except Exception as e:
                 log.error("打开抖音页失败：%s", e)
-                return []
+                return {"friends": [], "message": f"打开抖音页失败：{e}", "reason": "exception"}
 
             # 1) 探查登录状态。只在“明确”信号才返回；不依赖 networkidle。
             login_signals = await page.evaluate(
@@ -584,7 +589,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
                     "当前处于登录页，Cookie 已失效或未登录（signals: %s）",
                     {k: v for k, v in login_signals.items() if v},
                 )
-                return []
+                return {"friends": [], "message": "Cookie 已失效：当前页面是登录页", "reason": "login_page"}
 
             # 2) 等待聊天页渲染 — 并发探查多个“聊天页”指示器
             ready_selectors = (
@@ -675,7 +680,7 @@ async def fetch_friend_list(account: dict) -> list[str]:
 
         except Exception as e:
             log.error("获取好友列表失败: %s", e, exc_info=True)
-            return []
+            return {"friends": [], "message": f"获取好友列表失败：{e}", "reason": "exception"}
         finally:
             if browser:
                 try:
@@ -684,7 +689,10 @@ async def fetch_friend_list(account: dict) -> list[str]:
                     pass
             # local_proxy 被池复用，不 stop
 
-    return list(dict.fromkeys(friends))
+    result = list(dict.fromkeys(friends))
+    if not result:
+        return {"friends": [], "message": "未找到好友：聊天页可能未加载完成，请稍后重试", "reason": "empty"}
+    return {"friends": result, "message": "", "reason": ""}
 
 
 async def run_account_spark(account: dict, task_id: str) -> AccountResult:
@@ -1020,8 +1028,14 @@ def verify_cookie_sync(cookie: str, proxy: str = "") -> dict:
     return asyncio.run(verify_cookie(cookie, proxy))
 
 
-def fetch_friend_list_sync(account: dict) -> list[str]:
-    """同步包装器：获取好友列表"""
+def fetch_friend_list_sync(account: dict) -> dict:
+    """同步包装器：获取好友列表。
+
+    返回 dict（避免以后加字段时破坏 API 签名）：
+    - friends: list[str]  去重后的好友名列表
+    - message: str        供前端提示的消息；获取成功时为空
+    - reason: str         失败原因代码（"" / "login_page" / "empty" / "proxy_failed" / "no_cookies" / "exception"）
+    """
     return asyncio.run(fetch_friend_list(account))
 
 

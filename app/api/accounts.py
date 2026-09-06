@@ -165,9 +165,24 @@ def verify_account_cookie(account_id: int):
 
 @router.get("/{account_id}/friends")
 def get_account_friends(account_id: int):
-    """自动获取账号好友列表"""
+    """自动获取账号好友列表
+
+    返回结构::
+
+        {
+            "friends": list[str],   # 好友名列表
+            "count": int,           # 列表长度
+            "message": str,         # 成功时为空；失败时给前端的提示
+            "reason": str,          # 失败原因代码（"" / login_page / empty / proxy_failed / no_cookies / exception）
+        }
+    """
     acc = database.get_account(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="账号不存在")
-    friends = fetch_friend_list_sync(acc)
-    return {"friends": friends, "count": len(friends)}
+    result = fetch_friend_list_sync(acc)
+    return {
+        "friends": result.get("friends", []),
+        "count": len(result.get("friends", [])),
+        "message": result.get("message", ""),
+        "reason": result.get("reason", ""),
+    }

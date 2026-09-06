@@ -1027,7 +1027,12 @@ function openFetchFriendsModal(accountId) {
   $('#fetchFriendsModalSave').disabled = true;
   api.get('/api/accounts/' + accountId + '/friends').then(r => {
     const friends = r.friends || [];
-    if (!friends.length) { $('#fetch-friends-status').textContent = '未获取到好友列表'; return; }
+    if (!friends.length) {
+      const msg = r.message || '未获取到好友列表';
+      const hint = r.reason === 'login_page' ? '（请重新登录后重试）' : r.reason === 'empty' ? '（请稍后重试或检查网络）' : '';
+      $('#fetch-friends-status').textContent = `${msg}${hint}`;
+      return;
+    }
     $('#fetch-friends-status').textContent = `共获取到 ${friends.length} 位好友，勾选后点击添加`;
     $('#fetch-friends-list').innerHTML = friends.map((f) => `
       <label class="friend-pick-item">
@@ -1227,6 +1232,11 @@ async function pollRun() {
         $('#runBar').style.width = (r.progress || 0) + '%';
         const acct = r.current_account ? ` · 正在处理 ${r.current_account}` : '';
         addRunLine(`运行中… 已完成 ${r.accounts_done || 0}/${r.accounts_total || 0} 个账号${acct}`);
+        // 实时刷新日志页（如果用户当前在日志页）
+        const activeNav = document.querySelector('.nav button.active');
+        if (activeNav && activeNav.dataset && activeNav.dataset.view === 'logs' && typeof loadLogs === 'function') {
+          loadLogs(false);
+        }
       } else {
         clearInterval(pollTimer);
         pollTimer = null;
