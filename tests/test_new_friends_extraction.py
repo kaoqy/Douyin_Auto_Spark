@@ -1,4 +1,30 @@
-"""测试新的好友列表提取策略。"""
+"""Test the new friend-list extraction strategy.
+
+Skipped when Playwright chromium is not available (e.g. CI containers
+that only pip install without ``playwright install chromium``).
+"""
+import asyncio
+
+import pytest
+
+playwright = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
+from playwright.async_api import async_playwright  # noqa: E402
+
+from app import douyin_runner  # noqa: E402
+
+
+def _chromium_available() -> bool:
+    try:
+        with playwright.sync_playwright() as p:
+            b = p.chromium.launch(headless=True, args=["--no-sandbox"])
+            b.close()
+            return True
+    except Exception:
+        return False
+
+
+if not _chromium_available():
+    pytest.skip("Playwright chromium not installed; run `playwright install chromium`", allow_module_level=True)
 import asyncio
 import pytest
 from playwright.async_api import async_playwright
