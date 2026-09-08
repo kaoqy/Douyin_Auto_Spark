@@ -77,3 +77,64 @@ async def test_capture_screenshot_skips_closed_page():
     await douyin_runner._capture_screenshot(page, "账号/A")
     assert page.calls == []
 
+
+class _FakeSearchInput:
+    def __init__(self):
+        self.values = []
+
+    async def fill(self, value):
+        self.values.append(value)
+
+
+class _HiddenTextLocator:
+    async def is_visible(self, timeout=None):
+        return False
+
+
+class _MarkedLocator:
+    pass
+
+
+class _FakeFirstLocator:
+    def __init__(self, value):
+        self.first = value
+
+
+class _FakeSearchPage:
+    def __init__(self):
+        self.evaluate_calls = []
+        self.marked = _MarkedLocator()
+
+    def get_by_text(self, *args, **kwargs):
+        return _FakeFirstLocator(_HiddenTextLocator())
+
+    def locator(self, selector):
+        assert selector == "[data-das-search-hit='1']"
+        return _FakeFirstLocator(self.marked)
+
+    async def wait_for_timeout(self, timeout):
+        pass
+
+    async def evaluate(self, script, *args):
+        self.evaluate_calls.append((script, args))
+        if args:
+            return True
+        return None
+
+
+@pytest.mark.anyio
+async def test_search_conversation_keeps_lazy_locator_marker(monkeypatch):
+    """返回 Locator 前不能删除临时属性，否则�� Playwright 后续点击无法解析。"""
+    monkeypatch.setattr(douyin_runner, "SEARCH_RETRY_LIMIT", 1)
+    page = _FakeSearchPage()
+    search_input = _FakeSearchInput()
+
+    result = await douyin_runner._search_conversation(
+        page, search_input, "账号A", "好友B"
+    )
+
+    assert result is page.marked
+    assert search_input.values == ["", "好友B"]
+    assert len(page.evaluate_calls) == 2
+    assert page.evaluate_calls[0][1] == ()
+    assert page.evaluate_calls[1][1] == ("好友B",)

@@ -942,18 +942,47 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
 
 async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
-    """等待会话列表真正渲染（用搜索框出现判断）。"""
+    """等待会话列表真正渲染。
+
+    两步检测：
+    1. 搜索框出现（聊天页骨架就绪）
+    2. 会话列表中有可见的列表项（数据已拉取）
+    参考 bling-yshs 的思路：搜索框会先于会话列表渲染，若此时就输入关键词，
+    抖音的搜索索引尚未就绪，结果面板会一直为空，导致好友被误判成「改名了」。
+    """
     try:
         search = page.get_by_placeholder("搜索", exact=False)
         await search.first.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
         log.info("  [%s] 搜索框已出现，聊天页就绪", account_name)
     except Exception:
         try:
-            page.locator('input[type="search"], input[placeholder*="搜索"]').first.wait_for(
+            await page.locator('input[type="search"], input[placeholder*="搜索"]').first.wait_for(
                 state="visible", timeout=5000
             )
         except Exception:
             log.info("  [%s] 搜索框未在预期时间内出现", account_name)
+
+    # 额外等待会话列表中出现可见的列表项（不依赖哈希类名）。
+    # 用 JS 探测左侧栏是否有含 img 的短文本元素。
+    try:
+        has_items = await page.evaluate(
+            """() => {
+                var all = document.querySelectorAll('div, li, a');
+                for (var i = 0; i < all.length; i++) {
+                    var el = all[i];
+                    var r = el.getBoundingClientRect();
+                    if (r.left > 400 || r.width < 30 || r.height < 20 || r.height > 200) continue;
+                    if (!el.querySelector('img')) continue;
+                    var t = (el.textContent || '').trim();
+                    if (t.length >= 1 && t.length <= 30 && t.indexOf('\n') < 0) return true;
+                }
+                return false;
+            }"""
+        )
+        if has_items:
+            log.info("  [%s] 会话列表已渲染", account_name)
+    except Exception:
+        pass
 
     try:
         await page.wait_for_load_state("networkidle", timeout=CHAT_PAGE_IDLE_TIMEOUT)
@@ -964,11 +993,30 @@ async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
 async def _search_conversation(
     page: Any, search_input: Any, account_name: str, target_name: str
 ) -> Any:
-    """带重试地搜索会话（不依赖 .SearchPanelitembox 类名）。"""
+    """带重试地搜索会话（不依赖 .SearchPanelitembox 类名）。
+
+    参考 bling-yshs 的思路：
+    - 每一轮都重新清空输入框并等待旧结果消失，防止上一个好友的残留结果被当成命中。
+    - 多策略命中：先精确文本匹配，再 JS 结构探测。
+    """
     for attempt in range(1, SEARCH_RETRY_LIMIT + 1):
+        # 清除上一轮搜索留下的临时标记，避免返回过期结果。
+        try:
+            await page.evaluate(
+                """() => {
+                    for (const el of document.querySelectorAll('[data-das-search-hit]')) {
+                        el.removeAttribute('data-das-search-hit');
+                    }
+                }"""
+            )
+        except Exception:
+            pass
+
         await search_input.fill("")
+        # 等旧的结果面板收起，否则会读到上一个好友残留的列表项。
         await page.wait_for_timeout(SEARCH_INPUT_RESET_DELAY)
         await search_input.fill(target_name)
+        # 等待搜索结果渲染（抖音搜索有防抖 + 远程匹配）。
         await page.wait_for_timeout(1500)
 
         # 策略1：精确匹配目标名的可见元素
@@ -1004,16 +1052,9 @@ async def _search_conversation(
                 target_name,
             )
             if found:
-                result = page.locator("[data-das-search-hit='1']").first
-                await page.evaluate(
-                    """() => {
-                        var all = document.querySelectorAll('[data-das-search-hit]');
-                        for (var i = 0; i < all.length; i++) {
-                            all[i].removeAttribute('data-das-search-hit');
-                        }
-                    }"""
-                )
-                return result
+                # 不要在返回前删除属性。Playwright Locator 是惰性解析的，
+                # 提前删除会导致调用方点击时找不到元素。
+                return page.locator("[data-das-search-hit='1']").first
         except Exception:
             pass
 
