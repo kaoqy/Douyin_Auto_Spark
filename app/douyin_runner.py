@@ -787,15 +787,131 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 log.error("  [%s] %s", account["name"], result.message)
                 return result
 
-            search_input = page.locator('input[placeholder*="搜索"], input[type="search"]').first
+            # 聊天页就绪检测：多信号综合判断，不依赖单一选择器。
+            # 抖音前端哈希化严重，搜索框可能是 input 也可能是 contenteditable div，
+            # placeholder 也可能因 A/B 测试而变化。
+            chat_page_ready = False
             try:
-                await search_input.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
-            except Exception:
+                # 信号1：URL 不在登录页
+                current_url = page.url
+                is_login_page = "/login" in current_url or "/passport" in current_url
+
+                # 信号2：JS 探测搜索框（多种形态）
+                search_box_info = await page.evaluate(
+                    """() => {
+                        // 搜索框可能是 input 或 contenteditable
+                        var inputSearch = document.querySelector('input[placeholder*="搜索"], input[type="search"], input[placeholder*="search"]');
+                        var divSearch = document.querySelector('[class*="search"][contenteditable], [class*="Search"][contenteditable]');
+                        // 左侧栏搜索按钮（点击后弹出搜索框）
+                        var searchBtn = document.querySelector('[class*="search-btn"], [class*="SearchBtn"], [aria-label*="搜索"]');
+                        // 会话列表项
+                        var hasConversationItems = false;
+                        var all = document.querySelectorAll('div, li, a');
+                        for (var i = 0; i < all.length; i++) {
+                            var el = all[i];
+                            var r = el.getBoundingClientRect();
+                            if (r.left > 400 || r.width < 30 || r.height < 20 || r.height > 200) continue;
+                            if (!el.querySelector('img')) continue;
+                            var t = (el.textContent || '').trim();
+                            if (t.length >= 1 && t.length <= 30 && t.indexOf('\n') < 0) {
+                                hasConversationItems = true;
+                                break;
+                            }
+                        }
+                        return {
+                            hasInput: !!inputSearch,
+                            hasDivSearch: !!divSearch,
+                            hasSearchBtn: !!searchBtn,
+                            hasConversations: hasConversationItems,
+                            url: window.location.href
+                        };
+                    }"""
+                )
+
+                # 综合判断：不是登录页 + (有搜索框 或 有会话列表)
+                if not is_login_page and not search_box_info.get("url", "").startswith("https://www.douyin.com/login"):
+                    if search_box_info.get("hasInput") or search_box_info.get("hasDivSearch") or search_box_info.get("hasSearchBtn") or search_box_info.get("hasConversations"):
+                        chat_page_ready = True
+                        log.info("  [%s] 聊天页就绪：%s", account["name"], search_box_info)
+
+                # 信号3：传统选择器兜底
+                if not chat_page_ready:
+                    try:
+                        await page.locator('input[placeholder*="搜索"], input[type="search"]').first.wait_for(
+                            state="visible", timeout=3000
+                        )
+                        chat_page_ready = True
+                    except Exception:
+                        pass
+
+            except Exception as e:
+                log.warning("  [%s] 聊天页就绪检测异常：%s", account["name"], e)
+
+            if not chat_page_ready:
+                # 保存调试信息
+                debug_dir = SCREENSHOT_DIR / "debug"
+                debug_dir.mkdir(parents=True, exist_ok=True)
+                debug_name = f"{account['name']}-no-search-box"
+                try:
+                    await page.screenshot(path=str(debug_dir / f"{debug_name}.png"), full_page=False)
+                    html_snippet = await page.evaluate(
+                        """() => {
+                            var body = document.body;
+                            if (!body) return 'no body';
+                            // 只取前 3000 字符，避免太大
+                            return body.innerHTML.slice(0, 3000);
+                        }"""
+                    )
+                    with open(debug_dir / f"{debug_name}.html", "w", encoding="utf-8") as f:
+                        f.write(f"<!-- URL: {page.url} -->\n")
+                        f.write(html_snippet)
+                    log.info("  [%s] 调试信息已保存：%s", account["name"], debug_dir / debug_name)
+                except Exception as dbg_err:
+                    log.warning("  [%s] 保存调试信息失败：%s", account["name"], dbg_err)
+
                 result.status = "failed"
                 result.message = "聊天页搜索框未出现，Cookie 可能已经失效"
                 log.error("  [%s] 聊天页搜索框未出现，Cookie 可能已经失效", account["name"])
-                await _capture_screenshot(page, f"{account['name']}-cookie-expired")
                 return result
+
+            # 用多策略找到搜索框元素（不依赖单一选择器）
+            search_input = None
+            search_input_selectors = (
+                'input[placeholder*="搜索"]',
+                'input[type="search"]',
+                'input[placeholder*="search"]',
+                '[class*="search"][contenteditable="true"]',
+                '[class*="Search"][contenteditable="true"]',
+            )
+            for sel in search_input_selectors:
+                try:
+                    candidate = page.locator(sel).first
+                    if await candidate.is_visible(timeout=1500):
+                        search_input = candidate
+                        log.info("  [%s] 搜索框匹配选择器：%s", account["name"], sel)
+                        break
+                except Exception:
+                    continue
+
+            if search_input is None:
+                # 最后尝试：通过 JS 找到聚焦的输入元素
+                try:
+                    search_input = await page.evaluate_handle(
+                        """() => {
+                            var el = document.querySelector('input[placeholder*="搜索"], input[type="search"]');
+                            if (el) return el;
+                            var divs = document.querySelectorAll('[contenteditable="true"]');
+                            for (var i = 0; i < divs.length; i++) {
+                                var cls = divs[i].className || '';
+                                if (cls.indexOf('search') >= 0 || cls.indexOf('Search') >= 0) return divs[i];
+                            }
+                            return null;
+                        }"""
+                    )
+                    if search_input:
+                        log.info("  [%s] 搜索框通过 JS 句柄匹配", account["name"])
+                except Exception:
+                    pass
 
             await _wait_chat_list_ready(page, account["name"])
 
@@ -942,28 +1058,12 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
 
 async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
-    """等待会话列表真正渲染。
+    """等待会话列表真正渲染出数据。
 
-    两步检测：
-    1. 搜索框出现（聊天页骨架就绪）
-    2. 会话列表中有可见的列表项（数据已拉取）
+    搜索框检测已在前面完成，这里只等待会话列表中出现可见的好友项。
     参考 bling-yshs 的思路：搜索框会先于会话列表渲染，若此时就输入关键词，
     抖音的搜索索引尚未就绪，结果面板会一直为空，导致好友被误判成「改名了」。
     """
-    try:
-        search = page.get_by_placeholder("搜索", exact=False)
-        await search.first.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
-        log.info("  [%s] 搜索框已出现，聊天页就绪", account_name)
-    except Exception:
-        try:
-            await page.locator('input[type="search"], input[placeholder*="搜索"]').first.wait_for(
-                state="visible", timeout=5000
-            )
-        except Exception:
-            log.info("  [%s] 搜索框未在预期时间内出现", account_name)
-
-    # 额外等待会话列表中出现可见的列表项（不依赖哈希类名）。
-    # 用 JS 探测左侧栏是否有含 img 的短文本元素。
     try:
         has_items = await page.evaluate(
             """() => {
@@ -981,8 +1081,10 @@ async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
         )
         if has_items:
             log.info("  [%s] 会话列表已渲染", account_name)
+        else:
+            log.info("  [%s] 会话列表未检测到好友项，继续等待", account_name)
     except Exception:
-        pass
+        log.info("  [%s] 会话列表检测异常", account_name)
 
     try:
         await page.wait_for_load_state("networkidle", timeout=CHAT_PAGE_IDLE_TIMEOUT)
