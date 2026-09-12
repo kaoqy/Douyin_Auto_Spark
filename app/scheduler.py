@@ -177,7 +177,33 @@ def _finish(task_id: str, status: str, message: str, started: str, summary: dict
 
 # ==================== 定时调度 ====================
 
+def _has_successful_run_today() -> bool:
+    """检查今天是否已有成功的续火任务。
+
+    参考 bling-yshs/douyin-auto-spark 上游的 GitHub Actions 每日检查逻辑：
+    避免同一天多次重复续火。
+    """
+    try:
+        import sqlite3
+        from datetime import date
+        conn = database.get_conn()
+        today = date.today().isoformat()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE trigger_type = 'schedule' "
+            "AND status = 'success' "
+            "AND date(started_at) = ?",
+            (today,)
+        ).fetchone()
+        return row[0] > 0 if row else False
+    except Exception as e:
+        log.warning("检查今日任务状态失败：%s", e)
+        return False
+
+
 def _fire_scheduled():
+    if _has_successful_run_today():
+        log.info("今天已有成功的续火任务，跳过本次定时触发")
+        return
     log.info("定时任务触发，开始续火")
     run_spark_task(trigger_type="schedule")
 

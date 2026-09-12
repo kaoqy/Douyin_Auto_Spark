@@ -699,7 +699,13 @@ async def fetch_friend_list(account: dict) -> dict:
 
 
 async def run_account_spark(account: dict, task_id: str) -> AccountResult:
-    """执行单个账号的续火任务"""
+    """执行单个账号的续火任务。
+
+    核心改进（参考 bling-yshs/douyin-auto-spark 上游）：
+    - 搜索前清空输入框并等待旧结果消失，防止残留结果被误判为命中。
+    - 多策略命中：先精确文本匹配，再 JS 结构探测。
+    - 聊天页就绪检测：并发探测多个信号，不依赖单一选择器。
+    """
     from playwright.async_api import async_playwright
 
     result = AccountResult(
@@ -787,65 +793,10 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 log.error("  [%s] %s", account["name"], result.message)
                 return result
 
-            # 聊天页就绪检测：多信号综合判断，不依赖单一选择器。
+            # 聊天页就绪检测：并发探测多个信号，不依赖单一选择器。
             # 抖音前端哈希化严重，搜索框可能是 input 也可能是 contenteditable div，
             # placeholder 也可能因 A/B 测试而变化。
-            chat_page_ready = False
-            try:
-                # 信号1：URL 不在登录页
-                current_url = page.url
-                is_login_page = "/login" in current_url or "/passport" in current_url
-
-                # 信号2：JS 探测搜索框（多种形态）
-                search_box_info = await page.evaluate(
-                    """() => {
-                        // 搜索框可能是 input 或 contenteditable
-                        var inputSearch = document.querySelector('input[placeholder*="搜索"], input[type="search"], input[placeholder*="search"]');
-                        var divSearch = document.querySelector('[class*="search"][contenteditable], [class*="Search"][contenteditable]');
-                        // 左侧栏搜索按钮（点击后弹出搜索框）
-                        var searchBtn = document.querySelector('[class*="search-btn"], [class*="SearchBtn"], [aria-label*="搜索"]');
-                        // 会话列表项
-                        var hasConversationItems = false;
-                        var all = document.querySelectorAll('div, li, a');
-                        for (var i = 0; i < all.length; i++) {
-                            var el = all[i];
-                            var r = el.getBoundingClientRect();
-                            if (r.left > 400 || r.width < 30 || r.height < 20 || r.height > 200) continue;
-                            if (!el.querySelector('img')) continue;
-                            var t = (el.textContent || '').trim();
-                            if (t.length >= 1 && t.length <= 30 && t.indexOf('\n') < 0) {
-                                hasConversationItems = true;
-                                break;
-                            }
-                        }
-                        return {
-                            hasInput: !!inputSearch,
-                            hasDivSearch: !!divSearch,
-                            hasSearchBtn: !!searchBtn,
-                            hasConversations: hasConversationItems,
-                            url: window.location.href
-                        };
-                    }"""
-                )
-
-                # 综合判断：不是登录页 + (有搜索框 或 有会话列表)
-                if not is_login_page and not search_box_info.get("url", "").startswith("https://www.douyin.com/login"):
-                    if search_box_info.get("hasInput") or search_box_info.get("hasDivSearch") or search_box_info.get("hasSearchBtn") or search_box_info.get("hasConversations"):
-                        chat_page_ready = True
-                        log.info("  [%s] 聊天页就绪：%s", account["name"], search_box_info)
-
-                # 信号3：传统选择器兜底
-                if not chat_page_ready:
-                    try:
-                        await page.locator('input[placeholder*="搜索"], input[type="search"]').first.wait_for(
-                            state="visible", timeout=3000
-                        )
-                        chat_page_ready = True
-                    except Exception:
-                        pass
-
-            except Exception as e:
-                log.warning("  [%s] 聊天页就绪检测异常：%s", account["name"], e)
+            chat_page_ready = await _detect_chat_page_ready(page, account["name"])
 
             if not chat_page_ready:
                 # 保存调试信息
@@ -858,7 +809,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                         """() => {
                             var body = document.body;
                             if (!body) return 'no body';
-                            // 只取前 3000 字符，避免太大
                             return body.innerHTML.slice(0, 3000);
                         }"""
                     )
@@ -875,43 +825,12 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 return result
 
             # 用多策略找到搜索框元素（不依赖单一选择器）
-            search_input = None
-            search_input_selectors = (
-                'input[placeholder*="搜索"]',
-                'input[type="search"]',
-                'input[placeholder*="search"]',
-                '[class*="search"][contenteditable="true"]',
-                '[class*="Search"][contenteditable="true"]',
-            )
-            for sel in search_input_selectors:
-                try:
-                    candidate = page.locator(sel).first
-                    if await candidate.is_visible(timeout=1500):
-                        search_input = candidate
-                        log.info("  [%s] 搜索框匹配选择器：%s", account["name"], sel)
-                        break
-                except Exception:
-                    continue
-
+            search_input = await _find_search_input(page, account["name"])
             if search_input is None:
-                # 最后尝试：通过 JS 找到聚焦的输入元素
-                try:
-                    search_input = await page.evaluate_handle(
-                        """() => {
-                            var el = document.querySelector('input[placeholder*="搜索"], input[type="search"]');
-                            if (el) return el;
-                            var divs = document.querySelectorAll('[contenteditable="true"]');
-                            for (var i = 0; i < divs.length; i++) {
-                                var cls = divs[i].className || '';
-                                if (cls.indexOf('search') >= 0 || cls.indexOf('Search') >= 0) return divs[i];
-                            }
-                            return null;
-                        }"""
-                    )
-                    if search_input:
-                        log.info("  [%s] 搜索框通过 JS 句柄匹配", account["name"])
-                except Exception:
-                    pass
+                result.status = "failed"
+                result.message = "无法定位搜索框"
+                log.error("  [%s] 无法定位搜索框", account["name"])
+                return result
 
             await _wait_chat_list_ready(page, account["name"])
 
@@ -971,23 +890,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 await page.wait_for_timeout(2000)
 
                 # 多策略定位输入框（抖音 class 名带哈希，每次构建会变）
-                editor_input = None
-                for sel in (
-                    '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]',
-                    '[data-slate-editor="true"][contenteditable="true"]',
-                    'div[contenteditable="true"][data-slate-editor]',
-                    'div[contenteditable="true"][role="textbox"]',
-                    '[contenteditable="true"][data-gramm="false"]',
-                    'div[contenteditable="true"]:not([data-block])',
-                    'div[contenteditable="true"]',
-                ):
-                    try:
-                        loc = page.locator(sel).first
-                        if await loc.is_visible(timeout=2000):
-                            editor_input = loc
-                            break
-                    except Exception:
-                        continue
+                editor_input = await _find_editor_input(page, account["name"])
                 if editor_input is None:
                     log.warning("  [%s] 无法定位输入框", account["name"])
                     missing_names.append(target_name)
@@ -1002,7 +905,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 try:
                     await editor_input.click()
                 except Exception:
-                    # 后备：聚焦 body 后用键盘
                     pass
                 await page.wait_for_timeout(500)
 
@@ -1052,9 +954,135 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     await browser.close()
                 except Exception:
                     pass
-            # local_proxy 被池复用，不 stop
 
     return result
+
+
+async def _detect_chat_page_ready(page: Any, account_name: str) -> bool:
+    """并发探测多个信号判断聊天页是否就绪。
+
+    不依赖单一选择器，避免抖音前端哈希化 / A/B 测试导致误判。
+    """
+    try:
+        # 信号1：URL 不在登录页
+        current_url = page.url
+        is_login_page = "/login" in current_url or "/passport" in current_url
+        if is_login_page:
+            return False
+
+        # 信号2：并发探测多个页面元素
+        signals = await asyncio.gather(
+            _probe_selector_visible(page, 'input[placeholder*="搜索"]', 3000),
+            _probe_selector_visible(page, 'input[type="search"]', 3000),
+            _probe_selector_visible(page, '[class*="search"][contenteditable]', 3000),
+            _probe_selector_visible(page, '[class*="conversation"]', 3000),
+            _probe_selector_visible(page, '[class*="chat-list"]', 3000),
+            _probe_selector_visible(page, '[class*="message-list"]', 3000),
+            return_exceptions=True,
+        )
+        for ok in signals:
+            if ok is True:
+                log.info("  [%s] 聊天页就绪：URL=%s", account_name, current_url)
+                return True
+
+        # 信号3：JS 兜底探测
+        search_box_info = await page.evaluate(
+            """() => {
+                var inputSearch = document.querySelector('input[placeholder*="搜索"], input[type="search"]');
+                var divSearch = document.querySelector('[class*="search"][contenteditable]');
+                var searchBtn = document.querySelector('[aria-label*="搜索"]');
+                var hasConversations = false;
+                var all = document.querySelectorAll('div, li, a');
+                for (var i = 0; i < all.length; i++) {
+                    var el = all[i];
+                    var r = el.getBoundingClientRect();
+                    if (r.left > 400 || r.width < 30 || r.height < 20 || r.height > 200) continue;
+                    if (!el.querySelector('img')) continue;
+                    var t = (el.textContent || '').trim();
+                    if (t.length >= 1 && t.length <= 30 && t.indexOf('\n') < 0) {
+                        hasConversations = true;
+                        break;
+                    }
+                }
+                return {
+                    hasInput: !!inputSearch,
+                    hasDivSearch: !!divSearch,
+                    hasSearchBtn: !!searchBtn,
+                    hasConversations: hasConversations,
+                };
+            }"""
+        )
+        if search_box_info.get("hasInput") or search_box_info.get("hasDivSearch") or \
+           search_box_info.get("hasSearchBtn") or search_box_info.get("hasConversations"):
+            log.info("  [%s] 聊天页就绪（JS 兜底）：%s", account_name, search_box_info)
+            return True
+
+    except Exception as e:
+        log.warning("  [%s] 聊天页就绪检测异常：%s", account_name, e)
+
+    return False
+
+
+async def _find_search_input(page: Any, account_name: str) -> Any:
+    """多策略定位搜索框元素。"""
+    search_input_selectors = (
+        'input[placeholder*="搜索"]',
+        'input[type="search"]',
+        'input[placeholder*="search"]',
+        '[class*="search"][contenteditable="true"]',
+        '[class*="Search"][contenteditable="true"]',
+    )
+    for sel in search_input_selectors:
+        try:
+            candidate = page.locator(sel).first
+            if await candidate.is_visible(timeout=1500):
+                log.info("  [%s] 搜索框匹配选择器：%s", account_name, sel)
+                return candidate
+        except Exception:
+            continue
+
+    # 最后尝试：通过 JS 找到聚焦的输入元素
+    try:
+        handle = await page.evaluate_handle(
+            """() => {
+                var el = document.querySelector('input[placeholder*="搜索"], input[type="search"]');
+                if (el) return el;
+                var divs = document.querySelectorAll('[contenteditable="true"]');
+                for (var i = 0; i < divs.length; i++) {
+                    var cls = divs[i].className || '';
+                    if (cls.indexOf('search') >= 0 || cls.indexOf('Search') >= 0) return divs[i];
+                }
+                return null;
+            }"""
+        )
+        if handle:
+            log.info("  [%s] 搜索框通过 JS 句柄匹配", account_name)
+            return handle
+    except Exception:
+        pass
+
+    return None
+
+
+async def _find_editor_input(page: Any, account_name: str) -> Any:
+    """多策略定位消息输入框。"""
+    editor_selectors = (
+        '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]',
+        '[data-slate-editor="true"][contenteditable="true"]',
+        'div[contenteditable="true"][data-slate-editor]',
+        'div[contenteditable="true"][role="textbox"]',
+        '[contenteditable="true"][data-gramm="false"]',
+        'div[contenteditable="true"]:not([data-block])',
+        'div[contenteditable="true"]',
+    )
+    for sel in editor_selectors:
+        try:
+            loc = page.locator(sel).first
+            if await loc.is_visible(timeout=2000):
+                return loc
+        except Exception:
+            continue
+    return None
 
 
 async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
@@ -1095,9 +1123,9 @@ async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
 async def _search_conversation(
     page: Any, search_input: Any, account_name: str, target_name: str
 ) -> Any:
-    """带重试地搜索会话（不依赖 .SearchPanelitembox 类名）。
+    """带重试地搜索会话。
 
-    参考 bling-yshs 的思路：
+    参考 bling-yshs/douyin-auto-spark 上游思路：
     - 每一轮都重新清空输入框并等待旧结果消失，防止上一个好友的残留结果被当成命中。
     - 多策略命中：先精确文本匹配，再 JS 结构探测。
     """
@@ -1114,11 +1142,18 @@ async def _search_conversation(
         except Exception:
             pass
 
+        # 清空输入框并等待旧结果面板收起
         await search_input.fill("")
-        # 等旧的结果面板收起，否则会读到上一个好友残留的列表项。
         await page.wait_for_timeout(SEARCH_INPUT_RESET_DELAY)
+        # 等旧的结果面板消失，防止读到上一个好友的残留列表项
+        try:
+            old_result = page.locator("[data-das-search-hit='1']").first
+            await old_result.wait_for(state="hidden", timeout=SEARCH_RESULT_TIMEOUT)
+        except Exception:
+            pass
+
         await search_input.fill(target_name)
-        # 等待搜索结果渲染（抖音搜索有防抖 + 远程匹配）。
+        # 等待搜索结果渲染（抖音搜索有防抖 + 远程匹配）
         await page.wait_for_timeout(1500)
 
         # 策略1：精确匹配目标名的可见元素
