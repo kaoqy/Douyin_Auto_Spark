@@ -90,14 +90,14 @@ async def _check(html: str, expected: list):
     with open('app/douyin_runner.py', 'r', encoding='utf-8') as f:
         content = f.read()
     pattern = re.compile(
-        r'items = await page\.evaluate\(\s*"""\(\) => \{.*?return results\.slice\(0, 100\);\s*\}\s*""",?\s*\)',
+        r'items = await page\.evaluate\(\s*r"""\(\) => \{.*?return results\.slice\(0, 100\);\s*\}\s*""",?\s*\)',
         re.DOTALL
     )
     m = pattern.search(content)
     assert m, "items evaluate block not found"
     full_block = m.group(0)
     # 提取 JS 部分
-    js_match = re.search(r'"""(\(\) => \{.*?\})"""', full_block, re.DOTALL)
+    js_match = re.search(r'r"""(\(\) => \{.*?\})"""', full_block, re.DOTALL)
     js = js_match.group(1)
     
     async with async_playwright() as p:

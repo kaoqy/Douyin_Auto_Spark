@@ -567,7 +567,7 @@ async def fetch_friend_list(account: dict) -> dict:
             # 1) 探查登录状态。只在“明确”信号才返回；不依赖 networkidle。
             try:
                 login_signals = await page.evaluate(
-                    """() => {
+                    r"""() => {
                         var url = window.location.href || '';
                         var hasLoginPath = url.indexOf('/login') >= 0 || url.indexOf('/passport') >= 0;
                         var qrImg = document.querySelector('img[src*="qrcode"], img[src*="qr"]');
@@ -620,7 +620,7 @@ async def fetch_friend_list(account: dict) -> dict:
             # 3) 提取好友名称 — 结构探测，不依赖类名
             
             items = await page.evaluate(
-                """() => {
+                r"""() => {
                     var results = [];
                     var seen = {};
                     function blocked(t) {
@@ -632,7 +632,7 @@ async def fetch_friend_list(account: dict) -> dict:
                     function add(t) {
                         t = (t || '').trim();
                         if (t.length < 2 || t.length > 30) return false;
-                        if (t.indexOf('\\n') >= 0) return false;
+                        if (t.indexOf('\n') >= 0) return false;
                         if (blocked(t)) return false;
                         if (seen[t]) return false;
                         if (/^\d+$/.test(t)) return false;
@@ -987,7 +987,7 @@ async def _detect_chat_page_ready(page: Any, account_name: str) -> bool:
 
         # 信号3：JS 兜底探测
         search_box_info = await page.evaluate(
-            """() => {
+            r"""() => {
                 var inputSearch = document.querySelector('input[placeholder*="搜索"], input[type="search"]');
                 var divSearch = document.querySelector('[class*="search"][contenteditable]');
                 var searchBtn = document.querySelector('[aria-label*="搜索"]');
@@ -1044,7 +1044,7 @@ async def _find_search_input(page: Any, account_name: str) -> Any:
     # 最后尝试：通过 JS 找到聚焦的输入元素
     try:
         handle = await page.evaluate_handle(
-            """() => {
+            r"""() => {
                 var el = document.querySelector('input[placeholder*="搜索"], input[type="search"]');
                 if (el) return el;
                 var divs = document.querySelectorAll('[contenteditable="true"]');
@@ -1094,7 +1094,7 @@ async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
     """
     try:
         has_items = await page.evaluate(
-            """() => {
+            r"""() => {
                 var all = document.querySelectorAll('div, li, a');
                 for (var i = 0; i < all.length; i++) {
                     var el = all[i];
@@ -1133,7 +1133,7 @@ async def _search_conversation(
         # 清除上一轮搜索留下的临时标记，避免返回过期结果。
         try:
             await page.evaluate(
-                """() => {
+                r"""() => {
                     for (const el of document.querySelectorAll('[data-das-search-hit]')) {
                         el.removeAttribute('data-das-search-hit');
                     }
@@ -1169,7 +1169,7 @@ async def _search_conversation(
         # 策略2：JS 结构探测
         try:
             found = await page.evaluate(
-                """(targetName) => {
+                r"""(targetName) => {
                     var all = document.querySelectorAll('div, li, a');
                     for (var i = 0; i < all.length; i++) {
                         var el = all[i];
