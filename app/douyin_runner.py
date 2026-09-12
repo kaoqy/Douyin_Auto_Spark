@@ -1057,7 +1057,10 @@ async def _find_search_input(page: Any, account_name: str) -> Any:
         )
         if handle:
             log.info("  [%s] 搜索框通过 JS 句柄匹配", account_name)
-            return handle
+            # JSHandle 转 Locator：用 as_element() 包装
+            element = handle.as_element()
+            if element:
+                return element
     except Exception:
         pass
 
