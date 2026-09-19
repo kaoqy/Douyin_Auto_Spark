@@ -102,29 +102,49 @@ class _FakeFirstLocator:
 
 class _FakeSearchPage:
     def __init__(self):
-        self.evaluate_calls = []
-        self.marked = _MarkedLocator()
+        self.container = _MarkedLocator()
+        self._visible = True  # first attempt succeeds
 
     def get_by_text(self, *args, **kwargs):
         return _FakeFirstLocator(_HiddenTextLocator())
 
     def locator(self, selector):
-        assert selector == "[data-das-search-hit='1']"
-        return _FakeFirstLocator(self.marked)
+        if selector == ".SearchPanelitembox":
+            return _FakeLocatorChain(self.container, self._visible)
+        raise AssertionError(f"unexpected selector: {selector}")
 
     async def wait_for_timeout(self, timeout):
         pass
 
-    async def evaluate(self, script, *args):
-        self.evaluate_calls.append((script, args))
-        if args:
-            return True
-        return None
+
+class _FakeLocatorChain:
+    def __init__(self, result, visible=True):
+        self._result = result
+        self._visible = visible
+
+    def filter(self, **kwargs):
+        return self
+
+    @property
+    def first(self):
+        return _FakeSearchResult(self._result, self._visible)
+
+
+class _FakeSearchResult:
+    def __init__(self, container, visible=True):
+        self._container = container
+        self._visible = visible
+
+    async def is_visible(self, timeout=None):
+        return self._visible
+
+    async def wait_for(self, **kwargs):
+        pass
 
 
 @pytest.mark.anyio
-async def test_search_conversation_keeps_lazy_locator_marker(monkeypatch):
-    """返回 Locator 前不能删除临时属性，否则�� Playwright 后续点击无法解析。"""
+async def test_search_conversation_returns_container(monkeypatch):
+    """_search_conversation 返回 .SearchPanelitembox 容器 Locator。"""
     monkeypatch.setattr(douyin_runner, "SEARCH_RETRY_LIMIT", 1)
     page = _FakeSearchPage()
     search_input = _FakeSearchInput()
@@ -133,8 +153,5 @@ async def test_search_conversation_keeps_lazy_locator_marker(monkeypatch):
         page, search_input, "账号A", "好友B"
     )
 
-    assert result is page.marked
+    assert result._container is page.container
     assert search_input.values == ["", "好友B"]
-    assert len(page.evaluate_calls) == 2
-    assert page.evaluate_calls[0][1] == ()
-    assert page.evaluate_calls[1][1] == ("好友B",)
