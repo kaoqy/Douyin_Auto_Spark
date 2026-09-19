@@ -619,22 +619,23 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
             page = await context.new_page()
 
-            # 2. 打开聊天页
+            # 2. 打开聊天页（上游用 domcontentloaded，比 commit 更稳）
             try:
-                await page.goto("https://www.douyin.com/chat", wait_until="commit", timeout=20000)
+                await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=20000)
             except Exception as e:
                 result.status = "failed"
                 result.message = f"打开抖音页失败：{_humanize_playwright_error(e, bool(proxy_url))}"
                 log.error("  [%s] %s", account["name"], result.message)
                 return result
 
-            # 3. 等待搜索框出现
+            # 3. 等待搜索框出现（上游用 waitFor，不是 isVisible）
             search_input = page.locator('input.semi-input[placeholder="搜索"]').first
+            search_visible = False
             try:
-                await search_input.is_visible(timeout=CHAT_PAGE_READY_TIMEOUT)
+                await search_input.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
                 search_visible = True
             except Exception:
-                search_visible = False
+                pass
             if not search_visible:
                 # 保存调试信息
                 debug_dir = SCREENSHOT_DIR / "debug"
@@ -685,29 +686,35 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     result.fail += 1
                     continue
 
-                # 点击「发消息」按钮进入对话
+                # 点击「发消息」按钮进入对话（上游用正则精确匹配发消息/发私信）
+                import re as _re
                 try:
-                    send_btn = search_result.get_by_text("发消息", exact=False).first
-                    if await send_btn.is_visible(timeout=5000):
-                        await send_btn.click(timeout=5000)
-                    else:
-                        # 兜底：直接点击搜索结果
-                        await search_result.click(timeout=5000)
-                except Exception:
+                    send_btn = search_result.get_by_text(_re.compile(r"^(发消息|发私信)$")).first
+                    await send_btn.click(timeout=5000)
+                except Exception as e:
+                    log.warning("  [%s] 点「发消息」失败，尝试点容器：%s", account["name"], e)
                     try:
                         await search_result.click(timeout=5000)
-                    except Exception:
-                        pass
+                    except Exception as e2:
+                        log.warning("  [%s] 点容器也失败：%s", account["name"], e2)
+                        missing_names.append(target_name)
+                        result.detail.append({
+                            "target": target_name,
+                            "status": "failed",
+                            "message": "无法点击发消息按钮",
+                        })
+                        result.fail += 1
+                        continue
 
                 log.info("  [%s] 已打开私信：%s", account["name"], target_name)
 
-                # 等待输入框出现
+                # 等待输入框出现（上游用 waitFor）
                 editor_input = page.locator(
                     '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]'
                 ).first
                 editor_visible = False
                 try:
-                    await editor_input.is_visible(timeout=10000)
+                    await editor_input.wait_for(state="visible", timeout=10000)
                     editor_visible = True
                 except Exception:
                     pass
@@ -733,9 +740,8 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     include_source=include_source,
                 )
 
-                # 发送消息
+                # 发送消息（与上游同款：insert_text → 直接 Enter → 等待 1s）
                 await page.keyboard.insert_text(msg)
-                await page.wait_for_timeout(500)
                 await page.keyboard.press("Enter")
                 log.info("  [%s] 已发送消息：%s", account["name"], target_name)
                 await page.wait_for_timeout(1000)
@@ -778,7 +784,18 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
 
 async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
-    """等待会话列表真正渲染出数据。"""
+    """等待会话列表真正渲染出数据再开始搜索。
+
+    搜索框会先于会话列表渲染，若此时就输入关键词，抖音的搜索索引尚未就绪，
+    结果面板会一直为空，导致好友被误判成「改名了」。
+    """
+    try:
+        ready = page.locator('[class*="conversation"], [class*="Conversation"]').first
+        await ready.wait_for(state="visible", timeout=CHAT_PAGE_READY_TIMEOUT)
+    except Exception:
+        log.info("  [%s] 会话列表未在预期时间内出现，将依赖搜索重试兜底", account_name)
+
+    # 等网络安静下来，搜索命中率更高
     try:
         await page.wait_for_load_state("networkidle", timeout=CHAT_PAGE_IDLE_TIMEOUT)
     except Exception:
@@ -790,8 +807,10 @@ async def _search_conversation(
 ) -> Any:
     """带重试地搜索会话，返回搜索结果的容器 Locator。
 
-    每一轮都重新清空输入框并等待旧结果消失，防止上一个好友的残留结果被当成命中。
-    策略：使用 .SearchPanelitembox 容器过滤法（与上游同款）。
+    忠实复刻上游逻辑：
+    - 每一轮都重新清空输入框并等待旧结果消失
+    - 用 .SearchPanelitembox 容器过滤法定位结果
+    - 等待容器变为 visible（wait_for 而非 is_visible）
     """
     search_result = page.locator(".SearchPanelitembox").filter(
         has=page.get_by_text(target_name, exact=True)
@@ -800,9 +819,11 @@ async def _search_conversation(
     for attempt in range(1, SEARCH_RETRY_LIMIT + 1):
         # 清空输入框
         await search_input.fill("")
-        # 等旧的结果面板收起
+        # 等旧的结果面板收起（上游同款）
         try:
-            await page.locator(".SearchPanelitembox").first.wait_for(state="hidden", timeout=SEARCH_RESULT_TIMEOUT)
+            await page.locator(".SearchPanelitembox").first.wait_for(
+                state="hidden", timeout=SEARCH_RESULT_TIMEOUT
+            )
         except Exception:
             pass
         await page.wait_for_timeout(SEARCH_INPUT_RESET_DELAY)
@@ -810,13 +831,16 @@ async def _search_conversation(
         # 输入好友名
         await search_input.fill(target_name)
 
-        # 等待搜索结果渲染
+        # 等待搜索结果容器变为 visible（关键：用 wait_for 不是 is_visible）
+        # is_visible 在元素不存在时会立刻返回 False，不等超时
+        # wait_for(state='visible') 会等元素匹配 + 可见
         search_result_visible = False
         try:
-            await search_result.is_visible(timeout=SEARCH_RESULT_TIMEOUT)
+            await search_result.wait_for(state="visible", timeout=SEARCH_RESULT_TIMEOUT)
             search_result_visible = True
         except Exception:
             pass
+
         if search_result_visible:
             return search_result
 
