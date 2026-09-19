@@ -607,24 +607,34 @@ async def fetch_friend_list(account: dict) -> dict:
                 '[class*="chat-list"], [class*="conversation"], [class*="message-list"]',
             )
             ready_tasks = [
-                _probe_selector_visible(page, sel, timeout_ms=5000)
+                _probe_selector_visible(page, sel, timeout_ms=8000)
                 for sel in ready_selectors
             ]
             ready_results = await asyncio.gather(*ready_tasks, return_exceptions=True)
             ready_ok = any(r is True for r in ready_results)
             if not ready_ok:
-                log.warning("聊天页指示器均未出现，仍尝试提取会话列表（可能为加载缓慢）")
-                # 额外等 2s 看看是不是慢网络
-                await page.wait_for_timeout(2000)
+                log.warning("聊天页指示器均未出现，额外等待 3s 后重试")
+                await page.wait_for_timeout(3000)
+                ready_tasks2 = [
+                    _probe_selector_visible(page, sel, timeout_ms=5000)
+                    for sel in ready_selectors
+                ]
+                ready_results2 = await asyncio.gather(*ready_tasks2, return_exceptions=True)
+                ready_ok = any(r is True for r in ready_results2)
+                if not ready_ok:
+                    log.warning("二次探查仍未检测到聊天页指示器，仍尝试提取（可能结构变化）")
 
-            # 3) 提取好友名称 — 结构探测，不依赖类名
-            
+            # 3) 提取好友名称 — 多策略结构探测，不依赖类名
+            # 策略 A：通过 img → 父元素 → 子元素文本（保留，最稳定）
+            # 策略 B：通过含 data-* 属性的左侧栏项
+            # 策略 C：兜底，找左侧栏所有含 img 的短文本容器
             items = await page.evaluate(
                 r"""() => {
                     var results = [];
                     var seen = {};
                     function blocked(t) {
-                        if (t === '系统通知' || t === '消息' || t === '抖音' || t === '抖音小助手' || t === '抖音官方') return true;
+                        var blocked = ['系统通知', '消息', '抖音', '抖音小助手', '抖音官方', '互动消息', '陌生人消息', '通知'];
+                        for (var b = 0; b < blocked.length; b++) { if (t === blocked[b]) return true; }
                         if (t.indexOf('系统') === 0) return true;
                         if (t.indexOf('通知') === 0) return true;
                         return false;
@@ -636,41 +646,68 @@ async def fetch_friend_list(account: dict) -> dict:
                         if (blocked(t)) return false;
                         if (seen[t]) return false;
                         if (/^\d+$/.test(t)) return false;
+                        // 过滤掉明显不是人名的：纯符号、纯空白、纯数字
+                        if (/^[^一-鿿a-zA-Z]+$/.test(t) && /\d/.test(t)) return false;
                         seen[t] = true;
                         results.push(t);
                         return true;
                     }
-                    // 策略1：找 img 旁边的短文本
+                    // 策略 A：找左侧栏 conversation 项 — img 旁的文本
                     var imgs = document.querySelectorAll('img');
                     for (var i = 0; i < imgs.length; i++) {
                         var img = imgs[i];
                         var rect = img.getBoundingClientRect();
                         if (rect.width < 15 || rect.width > 80) continue;
                         if (rect.height < 15 || rect.height > 80) continue;
-                        var parent = img.parentElement;
-                        if (!parent) continue;
-                        var children = parent.children;
-                        for (var j = 0; j < children.length; j++) {
-                            var c = children[j];
-                            if (c === img) continue;
-                            var t = (c.textContent || '').trim();
-                            if (t.length >= 1 && t.length <= 30 && t.indexOf('\n') < 0) {
+                        // 向上找 conversation 容器（3-5 层）
+                        var container = img;
+                        for (var k = 0; k < 5; k++) {
+                            var p = container.parentElement;
+                            if (!p || p === document.body) break;
+                            container = p;
+                            var cls = container.className || '';
+                            if (cls.indexOf('conversation') >= 0 || cls.indexOf('Conversation') >= 0
+                                || cls.indexOf('item') >= 0 || cls.indexOf('Item') >= 0
+                                || cls.indexOf('chat') >= 0 || cls.indexOf('Chat') >= 0
+                                || cls.indexOf('list') >= 0 || cls.indexOf('List') >= 0) break;
+                        }
+                        // 在容器内找短文本
+                        var texts = container.querySelectorAll('span, div, p, a');
+                        for (var j = 0; j < texts.length; j++) {
+                            var t = (texts[j].textContent || '').trim();
+                            if (t.length >= 2 && t.length <= 20 && t.indexOf('\n') < 0) {
+                                // 排除含 img 元素内的子元素（避免重复）
+                                if (texts[j].querySelector('img')) continue;
                                 add(t);
                                 break;
                             }
                         }
                     }
-                    // 策略2：找左侧栏中含 img 的短文本元素
-                    if (results.length < 3) {
-                        var all = document.querySelectorAll('div, li, a, span');
-                        for (var i2 = 0; i2 < all.length; i2++) {
-                            var el = all[i2];
-                            var rect2 = el.getBoundingClientRect();
-                            if (rect2.left > 400) continue;
-                            if (rect2.width < 30) continue;
+                    // 策略 B：含 data-* 属性的左侧栏项
+                    if (results.length < 5) {
+                        var dataItems = document.querySelectorAll('[data-e2e*="conversation"] *, [data-e2e*="chat"] *, [class*="conversation"] *, [class*="chat-list"] *');
+                        for (var di = 0; di < dataItems.length; di++) {
+                            var el = dataItems[di];
+                            var r = el.getBoundingClientRect();
+                            if (r.left > 400 || r.width < 30 || r.height < 20 || r.height > 100) continue;
                             if (!el.querySelector('img')) continue;
-                            var t2 = (el.textContent || '').trim();
-                            if (t2.length < 1 || t2.length > 30) continue;
+                            var t = (el.textContent || '').trim();
+                            if (t.length < 2 || t.length > 20 || t.indexOf('\n') >= 0) continue;
+                            add(t);
+                        }
+                    }
+                    // 策略 C：兜底 — 所有左侧含 img 的容器
+                    if (results.length < 3) {
+                        var all = document.querySelectorAll('div, li, a, section');
+                        for (var i2 = 0; i2 < all.length; i2++) {
+                            var el2 = all[i2];
+                            var rect2 = el2.getBoundingClientRect();
+                            if (rect2.left > 400) continue;
+                            if (rect2.width < 30 || rect2.width > 500) continue;
+                            if (rect2.height < 20 || rect2.height > 120) continue;
+                            if (!el2.querySelector('img')) continue;
+                            var t2 = (el2.textContent || '').trim();
+                            if (t2.length < 2 || t2.length > 30) continue;
                             if (t2.indexOf('\n') >= 0) continue;
                             add(t2);
                         }
@@ -866,28 +903,37 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     continue
 
                 # 点击搜索结果进入对话
-                try:
-                    send_btn = None
-                    for marker in ("发消息", "发私信"):
-                        try:
-                            candidate = search_result.get_by_text(marker, exact=False).first
-                            if await candidate.is_visible(timeout=2000):
-                                send_btn = candidate
-                                break
-                        except Exception:
-                            continue
-                    if send_btn:
-                        await send_btn.click(timeout=5000)
-                    else:
-                        await search_result.click(timeout=5000)
-                except Exception:
+                # search_result 是容器（含「发消息」按钮），直接点按钮
+                chat_opened = False
+                for marker in ("发消息", "发私信"):
+                    try:
+                        btn = search_result.get_by_text(marker, exact=False).first
+                        if await btn.is_visible(timeout=2000):
+                            await btn.click(timeout=5000)
+                            chat_opened = True
+                            break
+                    except Exception:
+                        continue
+                if not chat_opened:
                     try:
                         await search_result.click(timeout=5000)
+                        chat_opened = True
                     except Exception:
                         pass
+                if not chat_opened:
+                    log.warning("  [%s] 无法点击搜索结果：%s", account["name"], target_name)
+                    missing_names.append(target_name)
+                    result.detail.append({
+                        "target": target_name,
+                        "status": "failed",
+                        "message": "无法点击搜索结果",
+                    })
+                    result.fail += 1
+                    continue
 
                 log.info("  [%s] 已打开私信：%s", account["name"], target_name)
-                await page.wait_for_timeout(2000)
+                # 等待聊天页右侧面板加载 — 输入框出现
+                await page.wait_for_timeout(3000)
 
                 # 多策略定位输入框（抖音 class 名带哈希，每次构建会变）
                 editor_input = await _find_editor_input(page, account["name"])
@@ -904,11 +950,11 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
                 try:
                     await editor_input.click()
+                    await page.wait_for_timeout(300)
                 except Exception:
                     pass
-                await page.wait_for_timeout(500)
 
-                # 渲染并发送消息
+                # 渲染消息
                 msg = yiyan.render_message(
                     message_template or None,
                     account["name"],
@@ -916,11 +962,24 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     include_source=include_source,
                 )
 
-                await page.keyboard.insert_text(msg)
-                await page.wait_for_timeout(500)
-                await page.keyboard.press("Enter")
-                log.info("  [%s] 已发送消息：%s", account["name"], target_name)
-                await page.wait_for_timeout(1500)
+                # 发送：type 方式（比 insert_text 更稳定，模拟键盘输入）
+                try:
+                    await editor_input.type(msg, delay=30)
+                    await page.wait_for_timeout(300)
+                    await page.keyboard.press("Enter")
+                    log.info("  [%s] 已发送消息：%s", account["name"], target_name)
+                    await page.wait_for_timeout(1500)
+                except Exception as type_err:
+                    log.warning("  [%s] type 失败，尝试 insert_text：%s", account["name"], type_err)
+                    try:
+                        await editor_input.fill("")
+                    except Exception:
+                        pass
+                    await page.keyboard.insert_text(msg)
+                    await page.wait_for_timeout(500)
+                    await page.keyboard.press("Enter")
+                    log.info("  [%s] 已发送消息（insert_text）：%s", account["name"], target_name)
+                    await page.wait_for_timeout(1500)
 
                 result.detail.append({
                     "target": target_name,
@@ -1126,11 +1185,14 @@ async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
 async def _search_conversation(
     page: Any, search_input: Any, account_name: str, target_name: str
 ) -> Any:
-    """带重试地搜索会话。
+    """带重试地搜索会话，返回搜索结果的「容器」Locator。
 
-    参考 bling-yshs/douyin-auto-spark 上游思路：
-    - 每一轮都重新清空输入框并等待旧结果消失，防止上一个好友的残留结果被当成命中。
-    - 多策略命中：先精确文本匹配，再 JS 结构探测。
+    返回的容器同时包含目标名文本和「发消息」按钮，下游可直接：
+        container.get_by_text("发消息").click()
+
+    策略优先级（参考 bling-yshs/douyin-auto-spark 上游）：
+    - 策略 1：通过 .SearchPanelitembox 选择器定位结果项容器（上游同款）。
+    - 策略 2：JS 结构探测，标记含文本的最近可点击祖先（带回溯父节点）。
     """
     for attempt in range(1, SEARCH_RETRY_LIMIT + 1):
         # 清除上一轮搜索留下的临时标记，避免返回过期结果。
@@ -1148,7 +1210,6 @@ async def _search_conversation(
         # 清空输入框并等待旧结果面板收起
         await search_input.fill("")
         await page.wait_for_timeout(SEARCH_INPUT_RESET_DELAY)
-        # 等旧的结果面板消失，防止读到上一个好友的残留列表项
         try:
             old_result = page.locator("[data-das-search-hit='1']").first
             await old_result.wait_for(state="hidden", timeout=SEARCH_RESULT_TIMEOUT)
@@ -1159,41 +1220,55 @@ async def _search_conversation(
         # 等待搜索结果渲染（抖音搜索有防抖 + 远程匹配）
         await page.wait_for_timeout(1500)
 
-        # 策略1：精确匹配目标名的可见元素
+        # 策略 1（上游同款）：.SearchPanelitembox 容器过滤法。
+        # 该容器同时包含好友名文本和「发消息」按钮，直接返回后下游可点按钮。
         try:
-            target_el = page.get_by_text(target_name, exact=True).first
-            if await target_el.is_visible(timeout=SEARCH_RESULT_TIMEOUT):
-                bbox = await target_el.bounding_box()
-                if bbox and bbox.get("width", 0) > 50:
-                    return target_el
+            container = page.locator(".SearchPanelitembox").filter(
+                has=page.get_by_text(target_name, exact=True)
+            ).first
+            if await container.is_visible(timeout=SEARCH_RESULT_TIMEOUT):
+                return container
         except Exception:
             pass
 
-        # 策略2：JS 结构探测
+        # 策略 2：JS 结构探测 — 找到含文本的元素后，向上回溯到可点击的祖先容器。
         try:
             found = await page.evaluate(
                 r"""(targetName) => {
-                    var all = document.querySelectorAll('div, li, a');
+                    var all = document.querySelectorAll('div, li, a, section, article');
                     for (var i = 0; i < all.length; i++) {
                         var el = all[i];
                         var text = (el.textContent || '').trim();
-                        if (text === targetName || text.indexOf(targetName) >= 0) {
-                            var rect = el.getBoundingClientRect();
-                            if (rect.width > 50 && rect.height > 20 && rect.height < 200) {
-                                if (rect.top > 50 && rect.top < window.innerHeight * 0.7) {
-                                    el.setAttribute('data-das-search-hit', '1');
-                                    return true;
-                                }
+                        if (text !== targetName && text.indexOf(targetName) < 0) continue;
+                        var rect = el.getBoundingClientRect();
+                        if (rect.width < 50 || rect.height < 20 || rect.height > 200) continue;
+                        if (rect.top <= 50 || rect.top > window.innerHeight * 0.7) continue;
+                        // 向上回溯到可点击的祖先（找到有 role=button / class 含 btn / 含发消息文本 的最近祖先）
+                        var clickable = el;
+                        for (var j = 0; j < 6; j++) {
+                            var parent = clickable.parentElement;
+                            if (!parent || parent === document.body) break;
+                            var cls = parent.className || '';
+                            var txt = (parent.textContent || '').trim();
+                            if ((cls.indexOf('btn') >= 0 || cls.indexOf('Button') >= 0
+                                || cls.indexOf('item') >= 0 || cls.indexOf('Item') >= 0
+                                || cls.indexOf('panel') >= 0 || cls.indexOf('Panel') >= 0
+                                || parent.getAttribute('role') === 'button'
+                                || txt.indexOf('发消息') >= 0 || txt.indexOf('发私信') >= 0)
+                                && parent.offsetWidth > 50) {
+                                clickable = parent;
+                                break;
                             }
+                            clickable = parent;
                         }
+                        clickable.setAttribute('data-das-search-hit', '1');
+                        return true;
                     }
                     return false;
                 }""",
                 target_name,
             )
             if found:
-                # 不要在返回前删除属性。Playwright Locator 是惰性解析的，
-                # 提前删除会导致调用方点击时找不到元素。
                 return page.locator("[data-das-search-hit='1']").first
         except Exception:
             pass

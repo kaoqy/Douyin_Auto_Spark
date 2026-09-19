@@ -293,8 +293,21 @@ $('#btn-sel-disable').onclick = () => batchSetEnabled(false);
 $('#btn-spark-selected').onclick = async () => {
   const ids = getSelectedIds();
   if (!ids.length) return toast('请先勾选账号', 'err');
-  try { await api.post('/api/tasks/run', { account_ids: ids }); toast('已启动续火', 'good'); loadDashboard(); }
-  catch (e) { toast('启动失败', 'err'); }
+  try {
+    const r = await api.post('/api/tasks/run', { account_ids: ids });
+    if (r && r.status === 'skipped') {
+      toast('已有续火任务在运行，当前选择已忽略', 'warn');
+      // 打开运行面板显示当前进度
+      $('#runModal').hidden = false;
+      $('#runBar').style.width = '0%';
+      $('#runInfo').textContent = '已有任务在运行，查看进度…';
+      $('#runLines').innerHTML = '';
+      pollRun();
+    } else {
+      toast('已启动续火', 'good');
+    }
+    loadDashboard();
+  } catch (e) { toast('启动失败', 'err'); }
 };
 
 function batchSetEnabled(enabled) {
@@ -1190,7 +1203,8 @@ $('#btn-run').onclick = async () => {
     if (r && r.status === 'skipped') {
       $('#runInfo').textContent = '⚠️ 已有续火任务在运行，请等待当前任务完成';
       addRunLine('本次点击被跳过：上一个任务仍在运行中');
-      loadDashboard();
+      // 仍然轮询，显示当前运行中的任务进度
+      pollRun();
       return;
     }
     pollRun();
@@ -1220,7 +1234,9 @@ async function pollRun() {
     }
   }, 1000);
 
+  let completed = false;
   pollTimer = setInterval(async () => {
+    if (completed) return; // 防止竞态
     try {
       const s = await api.get('/api/tasks/run');
       if (s.run && s.run.status === 'running') {
@@ -1238,6 +1254,7 @@ async function pollRun() {
           loadLogs(false);
         }
       } else {
+        completed = true;
         clearInterval(pollTimer);
         pollTimer = null;
         clearInterval(waitingTip);
@@ -1254,6 +1271,7 @@ async function pollRun() {
         loadDashboard(); loadAccounts(); loadLogs();
       }
     } catch (e) {
+      completed = true;
       clearInterval(pollTimer);
       pollTimer = null;
       clearInterval(waitingTip);
