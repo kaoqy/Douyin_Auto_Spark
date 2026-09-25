@@ -399,7 +399,15 @@ async def _probe_text_visible(page, text: str, timeout_ms: int) -> bool:
 # === 获取好友列表 ===
 
 async def fetch_friend_list(account: dict) -> dict:
-    """自动获取抖音聊天页的好友列表。"""
+    """自动获取抖音聊天页的好友列表。
+
+    使用上游 AutoSpark 同款逻辑：
+    1. 导航到聊天页
+    2. 等待 [data-e2e="conversation-item"] 出现
+    3. 滚动加载全部会话
+    4. 用 .conversationConversationItemtitle 提取好友名
+    5. 过滤群聊和系统账号
+    """
     from playwright.async_api import async_playwright
 
     proxy_url = account.get("proxy", "") or ""
@@ -428,78 +436,76 @@ async def fetch_friend_list(account: dict) -> dict:
                 await context.add_cookies(minimal)
 
             page = await context.new_page()
-            await page.goto("https://www.douyin.com/chat", wait_until="commit", timeout=20000)
+            await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=20000)
 
-            # 等待搜索框出现
-            search_visible = await page.locator('input[placeholder*="搜索"]').first.is_visible(timeout=CHAT_PAGE_READY_TIMEOUT)
-            if not search_visible:
-                # 检查登录页
+            # 等待会话列表加载 —— 使用上游同款选择器
+            try:
+                await page.locator('[data-e2e="conversation-item"]').first.wait_for(
+                    state="visible", timeout=CHAT_PAGE_READY_TIMEOUT
+                )
+            except Exception:
+                current_url = page.url
+                if "login" in current_url.lower():
+                    return {"friends": [], "message": "Cookie 已失效：当前页面是登录页", "reason": "login_page"}
                 login_text = await page.get_by_text("扫码登录", exact=False).first.is_visible(timeout=2000)
                 if login_text:
                     return {"friends": [], "message": "Cookie 已失效：当前页面是登录页", "reason": "login_page"}
-                return {"friends": [], "message": "聊天页加载超时", "reason": "timeout"}
+                return {"friends": [], "message": "聊天页会话列表加载超时", "reason": "timeout"}
 
-            # 等待会话列表渲染
-            await page.wait_for_load_state("networkidle", timeout=CHAT_PAGE_IDLE_TIMEOUT)
-            await page.wait_for_timeout(2000)
+            # 快速滚动加载全部好友会话（上游同款逻辑）
+            prev_count = 0
+            for _ in range(6):
+                current_count = await page.locator('[data-e2e="conversation-item"]').count()
+                if current_count == prev_count and _ > 1:
+                    break
+                prev_count = current_count
+                await page.evaluate(
+                    () => {
+                        const items = document.querySelectorAll('[data-e2e="conversation-item"]');
+                        if (items.length > 0) {
+                            const parent = items[items.length - 1].parentElement;
+                            if (parent) parent.scrollTop = parent.scrollHeight;
+                        }
+                    }
+                )
+                await page.wait_for_timeout(300)
 
-            # 提取好友名称 —— JS 结构探测
+            # 提取好友名称 —— 使用上游同款选择器 .conversationConversationItemtitle
             items = await page.evaluate(
-                r"""() => {
-                    var results = [];
-                    var seen = {};
-                    function blocked(t) {
-                        var list = ['系统通知', '消息', '抖音', '抖音小助手', '抖音官方', '互动消息', '陌生人消息', '通知'];
-                        for (var b = 0; b < list.length; b++) if (t === list[b]) return true;
-                        if (t.indexOf('系统') === 0 || t.indexOf('通知') === 0) return true;
-                        return false;
+                function() {
+                    const contacts = [];
+                    const seen = new Set();
+                    const blocked = new Set([
+                        '系统通知', '消息', '抖音', '抖音小助手', '抖音官方',
+                        '互动消息', '陌生人消息', '通知', '生活服务', '电商助手',
+                        '企业小助手', '运营助手', '创作助手', '抖音商城',
+                        '消息助手', '安全中心', '抖音支付', '抖音游戏',
+                        '粉丝群', '群聊', '企业号', '小程序', '抖音电商'
+                    ]);
+                    const domItems = document.querySelectorAll('[data-e2e="conversation-item"]');
+                    for (let i = 0; i < domItems.length; i++) {
+                        const item = domItems[i];
+                        const titleNode = item.querySelector('.conversationConversationItemtitle');
+                        if (!titleNode) continue;
+                        const title = (titleNode.textContent || '').replace(/ /g, ' ').trim();
+                        if (!title || title.length < 1 || title.length > 30) continue;
+                        if (title.indexOf('\n') >= 0) continue;
+                        if (seen.has(title)) continue;
+                        if (/^\d+$/.test(title)) continue;
+                        // 过滤群聊（标题含逗号拼接多人名）
+                        if (title.includes(',') || title.includes('，')) continue;
+                        if (blocked.has(title)) continue;
+                        if (title.startsWith('系统') || title.startsWith('通知')) continue;
+                        seen.add(title);
+                        contacts.push(title);
                     }
-                    function add(t) {
-                        t = (t || '').trim();
-                        if (t.length < 2 || t.length > 30) return false;
-                        if (t.indexOf('\n') >= 0) return false;
-                        if (blocked(t)) return false;
-                        if (seen[t]) return false;
-                        if (/^\d+$/.test(t)) return false;
-                        seen[t] = true;
-                        results.push(t);
-                        return true;
-                    }
-                    // 策略 A：找 img 旁的短文本
-                    var imgs = document.querySelectorAll('img');
-                    for (var i = 0; i < imgs.length; i++) {
-                        var img = imgs[i];
-                        var r = img.getBoundingClientRect();
-                        if (r.width < 15 || r.width > 80 || r.height < 15 || r.height > 80) continue;
-                        var p = img.parentElement;
-                        if (!p) continue;
-                        var children = p.children;
-                        for (var j = 0; j < children.length; j++) {
-                            if (children[j] === img) continue;
-                            var t = (children[j].textContent || '').trim();
-                            if (t.length >= 1 && t.length <= 30 && t.indexOf('\n') < 0) {
-                                add(t); break;
-                            }
-                        }
-                    }
-                    // 策略 B：左侧栏含 img 的容器
-                    if (results.length < 5) {
-                        var all = document.querySelectorAll('div, li, a, span');
-                        for (var i2 = 0; i2 < all.length; i2++) {
-                            var el = all[i2];
-                            var r2 = el.getBoundingClientRect();
-                            if (r2.left > 400 || r2.width < 30 || r2.height < 20 || r2.height > 200) continue;
-                            if (!el.querySelector('img')) continue;
-                            var t2 = (el.textContent || '').trim();
-                            if (t2.length < 2 || t2.length > 30 || t2.indexOf('\n') >= 0) continue;
-                            add(t2);
-                        }
-                    }
-                    return results.slice(0, 100);
-                }"""
+                    return contacts;
+                }
             )
             if items:
                 friends.extend(items)
+
+            log.info("获取好友列表完成：共 %d 位好友", len(friends))
 
         except Exception as e:
             log.error("获取好友列表失败: %s", e, exc_info=True)
@@ -516,27 +522,18 @@ async def fetch_friend_list(account: dict) -> dict:
         return {"friends": [], "message": "未找到好友：聊天页可能未加载完成", "reason": "empty"}
     return {"friends": result, "message": "", "reason": ""}
 
-
 # ====================================================================
-# 续火核心逻辑 —— 基于 bling-yshs/douyin-auto-spark 上游重写
+# ====================================================================
+# 续火核心逻辑 —— 修复版：更好的 editor 选择器 + 发送验证
 # ====================================================================
 
 async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     """执行单个账号的续火任务。
 
-    完整复刻上游 bling-yshs/douyin-auto-spark 的流程：
-    1. 打开抖音聊天页
-    2. 等待搜索框出现
-    3. 等待会话列表渲染（networkidle）
-    4. 遍历每个好友：
-       a. 清空搜索框，等待旧结果消失
-       b. 输入好友名
-       c. 等待 .SearchPanelitembox 容器出现（含目标名）
-       d. 点击「发消息」按钮
-       e. 等待输入框出现
-       f. 输入消息并发送
-       g. 等待 1s
-    5. 汇总结果
+    修复内容：
+    - editor 选择器增加 fallback（messageEditor → contenteditable 通用）
+    - 消息发送后验证输入框是否清空，未清空则重试 Enter
+    - 搜索框选择器 fallback（semi-input → placeholder 通用）
     """
     from playwright.async_api import async_playwright
 
@@ -550,7 +547,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
         result.channel = "socks"
 
     proxy_label = _safe_proxy_label(proxy_url)
-    log.info("👤 [%s] 账号：%s", proxy_label, account["name"])
+    log.info("[%s] 账号：%s", proxy_label, account["name"])
 
     targets = database.get_enabled_targets(account["id"])
     if not targets:
@@ -589,7 +586,6 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
     async with async_playwright() as p:
         browser = None
         try:
-            # 1. 启动浏览器
             browser_path = os.environ.get("PLAYWRIGHT_BROWSER_PATH", "").strip() or None
             headless = os.environ.get("PLAYWRIGHT_HEADLESS", "1") != "0"
             launch_options = {"headless": headless}
@@ -619,7 +615,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
             page = await context.new_page()
 
-            # 2. 打开聊天页（上游用 domcontentloaded，比 commit 更稳）
+            # 2. 打开聊天页
             try:
                 await page.goto("https://www.douyin.com/chat", wait_until="domcontentloaded", timeout=20000)
             except Exception as e:
@@ -628,7 +624,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                 log.error("  [%s] %s", account["name"], result.message)
                 return result
 
-            # 3. 等待搜索框出现（上游用 waitFor，不是 isVisible）
+            # 3. 等待搜索框出现 —— fallback: semi-input → placeholder 通用
             search_input = page.locator('input.semi-input[placeholder="搜索"]').first
             search_visible = False
             try:
@@ -637,7 +633,14 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
             except Exception:
                 pass
             if not search_visible:
-                # 保存调试信息
+                # fallback: 用通用 placeholder 选择器重试
+                try:
+                    search_input = page.locator('input[placeholder*="搜索"]').first
+                    await search_input.wait_for(state="visible", timeout=10000)
+                    search_visible = True
+                except Exception:
+                    pass
+            if not search_visible:
                 debug_dir = SCREENSHOT_DIR / "debug"
                 debug_dir.mkdir(parents=True, exist_ok=True)
                 debug_name = f"{account['name']}-no-search-box"
@@ -686,7 +689,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     result.fail += 1
                     continue
 
-                # 点击「发消息」按钮进入对话（上游用正则精确匹配发消息/发私信）
+                # 点击「发消息」按钮进入对话
                 import re as _re
                 try:
                     send_btn = search_result.get_by_text(_re.compile(r"^(发消息|发私信)$")).first
@@ -708,7 +711,7 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
                 log.info("  [%s] 已打开私信：%s", account["name"], target_name)
 
-                # 等待输入框出现（上游用 waitFor）
+                # 等待输入框出现 —— 多策略 fallback
                 editor_input = page.locator(
                     '.messageEditorimChatEditorContainer [data-slate-editor="true"][contenteditable="true"]'
                 ).first
@@ -718,6 +721,22 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     editor_visible = True
                 except Exception:
                     pass
+                if not editor_visible:
+                    # fallback 1: 通用 contenteditable
+                    try:
+                        editor_input = page.locator('[contenteditable="true"][data-placeholder="发送消息"]').first
+                        await editor_input.wait_for(state="visible", timeout=5000)
+                        editor_visible = True
+                    except Exception:
+                        pass
+                if not editor_visible:
+                    # fallback 2: 任意可见 contenteditable
+                    try:
+                        editor_input = page.locator('[contenteditable="true"]').first
+                        await editor_input.wait_for(state="visible", timeout=5000)
+                        editor_visible = True
+                    except Exception:
+                        pass
                 if not editor_visible:
                     log.warning("  [%s] 无法定位输入框", account["name"])
                     missing_names.append(target_name)
@@ -740,11 +759,8 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
                     include_source=include_source,
                 )
 
-                # 发送消息（与上游同款：insert_text → 直接 Enter → 等待 1s）
-                await page.keyboard.insert_text(msg)
-                await page.keyboard.press("Enter")
-                log.info("  [%s] 已发送消息：%s", account["name"], target_name)
-                await page.wait_for_timeout(1000)
+                # 发送消息 + 验证
+                await _send_message(page, editor_input, msg, account["name"], target_name)
 
                 result.detail.append({
                     "target": target_name,
@@ -782,6 +798,43 @@ async def run_account_spark(account: dict, task_id: str) -> AccountResult:
 
     return result
 
+
+async def _send_message(page, editor_input, msg, account_name, target_name):
+    """发送消息并验证是否成功。
+
+    与上游逻辑一致：
+    1. insertText → Enter → 等待 1s
+    2. 检查输入框是否清空
+    3. 未清空则重试 Enter 一次
+    """
+    await page.keyboard.insert_text(msg)
+    await page.keyboard.press("Enter")
+    await page.wait_for_timeout(1000)
+
+    # 验证：检查输入框是否清空
+    try:
+        remaining = (await editor_input.input_value()) or ""
+        remaining = remaining.replace(/​/g, "").strip()
+        if not remaining:
+            remaining = (await editor_input.text_content()) or ""
+            remaining = remaining.replace(/​/g, "").strip()
+    except Exception:
+        remaining = ""
+
+    if remaining:
+        log.info("  [%s] 输入框残留「%s」，重试 Enter → %s", account_name, remaining[:20], target_name)
+        await page.keyboard.press("Enter")
+        await page.wait_for_timeout(1000)
+        # 再次检查
+        try:
+            remaining2 = (await editor_input.text_content()) or ""
+            remaining2 = remaining2.replace(/​/g, "").strip()
+        except Exception:
+            remaining2 = ""
+        if remaining2:
+            log.warning("  [%s] 重试后仍有残留：%s → %s", account_name, remaining2[:20], target_name)
+    else:
+        log.info("  [%s] 已发送消息：%s", account_name, target_name)
 
 async def _wait_chat_list_ready(page: Any, account_name: str) -> None:
     """等待会话列表真正渲染出数据再开始搜索。

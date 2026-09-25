@@ -194,6 +194,7 @@ function statusBadge(s) {
 function loadTrend(tasks) {
   const box = $('#trendChart');
   if (!box) return;
+  if (!tasks || !tasks.length) { box.innerHTML = '<div class="hint" style="padding:20px">暂无任务数据</div>'; $('#trendHint').textContent = ''; return; }
   try {
     const days = {};
     tasks.forEach(t => {
