@@ -472,6 +472,7 @@ async def fetch_friend_list(account: dict) -> dict:
 
             # 提取好友名称 —— 使用上游同款选择器 .conversationConversationItemtitle
             items = await page.evaluate(
+                r"""
                 function() {
                     const contacts = [];
                     const seen = new Set();
@@ -500,7 +501,7 @@ async def fetch_friend_list(account: dict) -> dict:
                         contacts.push(title);
                     }
                     return contacts;
-                }
+                }""")
             )
             if items:
                 friends.extend(items)
