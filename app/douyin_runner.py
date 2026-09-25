@@ -460,13 +460,14 @@ async def fetch_friend_list(account: dict) -> dict:
                     break
                 prev_count = current_count
                 await page.evaluate(
+                r"""
                     () => {
                         const items = document.querySelectorAll('[data-e2e="conversation-item"]');
                         if (items.length > 0) {
                             const parent = items[items.length - 1].parentElement;
                             if (parent) parent.scrollTop = parent.scrollHeight;
                         }
-                    }
+                    }""")
                 )
                 await page.wait_for_timeout(300)
 
