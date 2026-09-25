@@ -468,7 +468,6 @@ async def fetch_friend_list(account: dict) -> dict:
                             if (parent) parent.scrollTop = parent.scrollHeight;
                         }
                     }""")
-                )
                 await page.wait_for_timeout(300)
 
             # 提取好友名称 —— 使用上游同款选择器 .conversationConversationItemtitle
@@ -503,7 +502,6 @@ async def fetch_friend_list(account: dict) -> dict:
                     }
                     return contacts;
                 }""")
-            )
             if items:
                 friends.extend(items)
 
