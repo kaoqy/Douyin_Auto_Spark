@@ -90,7 +90,7 @@ async def _check(html: str, expected: list):
         content = f.read()
     # Match the new evaluate block format: function() { ... }
     pattern = re.compile(
-        r"items = await page\.evaluate\(\s*function\(\) \{(.*?)\}\s*\)",
+        r"items = await page\.evaluate\(\s*r\"\"\"\s*function\(\) \{(.*?)\}\"\"\"\)",
         re.DOTALL
     )
     m = pattern.search(content)
