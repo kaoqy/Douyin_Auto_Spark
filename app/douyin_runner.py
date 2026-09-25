@@ -811,13 +811,10 @@ async def _send_message(page, editor_input, msg, account_name, target_name):
     await page.keyboard.press("Enter")
     await page.wait_for_timeout(1000)
 
-    # 验证：检查输入框是否清空
+    # 验证：检查输入框是否清空（contenteditable 用 text_content）
     try:
-        remaining = (await editor_input.input_value()) or ""
-        remaining = remaining.replace(/​/g, "").strip()
-        if not remaining:
-            remaining = (await editor_input.text_content()) or ""
-            remaining = remaining.replace(/​/g, "").strip()
+        remaining = (await editor_input.text_content()) or ""
+        remaining = remaining.replace("\u200b", "").strip()
     except Exception:
         remaining = ""
 
@@ -828,7 +825,7 @@ async def _send_message(page, editor_input, msg, account_name, target_name):
         # 再次检查
         try:
             remaining2 = (await editor_input.text_content()) or ""
-            remaining2 = remaining2.replace(/​/g, "").strip()
+            remaining2 = remaining2.replace("\u200b", "").strip()
         except Exception:
             remaining2 = ""
         if remaining2:

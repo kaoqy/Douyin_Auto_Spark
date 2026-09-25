@@ -269,8 +269,7 @@ async function loadAccounts() {
         </td>
       </tr>`).join('') : '<tr><td colspan="7" style="color:var(--muted)">暂无账号</td></tr>';
     $('#accCheckAll').checked = false;
-    updateSelCount();
-    $('#btn-spark-selected').disabled = true;
+    updateSelCount()
   } catch (e) {
     if (tb) tb.innerHTML = `<tr><td colspan="7"><div class="empty-state error-state">${esc(e.message || '账号加载失败')}</div></td></tr>`;
     toast('加载账号失败', 'err');
